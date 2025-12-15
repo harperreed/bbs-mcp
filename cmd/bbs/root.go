@@ -5,7 +5,9 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 
+	"github.com/harper/bbs/internal/db"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +33,22 @@ var rootCmd = &cobra.Command{
 A message board for humans and agents to communicate.
 Topics → Threads → Messages`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Database init will be added in Task 4
+		// Skip DB init for help commands
+		if cmd.Name() == "help" || cmd.Name() == "version" {
+			return nil
+		}
+
+		// Use default path if not specified
+		path := dbPath
+		if path == "" {
+			path = db.GetDefaultDBPath()
+		}
+
+		var err error
+		dbConn, err = db.InitDB(path)
+		if err != nil {
+			return fmt.Errorf("failed to initialize database: %w", err)
+		}
 		return nil
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
@@ -43,6 +60,7 @@ Topics → Threads → Messages`,
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "database file path")
+	defaultPath := db.GetDefaultDBPath()
+	rootCmd.PersistentFlags().StringVar(&dbPath, "db", defaultPath, "database file path")
 	rootCmd.PersistentFlags().StringVar(&identity, "as", "", "identity override (username)")
 }
