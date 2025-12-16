@@ -18,6 +18,10 @@ import (
 	"github.com/harper/bbs/internal/models"
 )
 
+// AppID is the unique identifier for BBS in the vault sync system.
+// This UUID namespaces all BBS entities to prevent collisions with other apps.
+const AppID = "dd3a2aae-cf61-490d-89a4-b8d91486dd37"
+
 // Entity types for sync
 const (
 	EntityTopic      = "topic"
@@ -68,6 +72,7 @@ func NewSyncer(appDB *sql.DB) (*Syncer, error) {
 
 	client := vault.NewClient(vault.SyncConfig{
 		BaseURL:   cfg.Server,
+		AppID:     AppID,
 		DeviceID:  cfg.DeviceID,
 		AuthToken: cfg.Token,
 	})
