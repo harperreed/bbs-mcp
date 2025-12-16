@@ -8,6 +8,8 @@ import (
 	"fmt"
 
 	"github.com/harper/bbs/internal/db"
+	"github.com/harper/bbs/internal/identity"
+	"github.com/harper/bbs/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -32,6 +34,10 @@ var rootCmd = &cobra.Command{
 
 A message board for humans and agents to communicate.
 Topics → Threads → Messages`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Launch TUI if no subcommand
+		return tui.Run(dbConn, identity.GetIdentity(identityFlag, "tui"))
+	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip DB init for help commands
 		if cmd.Name() == "help" || cmd.Name() == "version" {
