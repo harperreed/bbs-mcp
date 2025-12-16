@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	dbPath   string
-	dbConn   *sql.DB
-	identity string
+	dbPath       string
+	dbConn       *sql.DB
+	identityFlag string
 )
 
 var rootCmd = &cobra.Command{
@@ -62,5 +62,5 @@ Topics → Threads → Messages`,
 func init() {
 	defaultPath := db.GetDefaultDBPath()
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", defaultPath, "database file path")
-	rootCmd.PersistentFlags().StringVar(&identity, "as", "", "identity override (username)")
+	rootCmd.PersistentFlags().StringVar(&identityFlag, "as", "", "identity override (username)")
 }
