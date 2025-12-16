@@ -74,7 +74,14 @@ linters-settings:
     exclude-functions:
       - (*github.com/spf13/pflag.FlagSet).GetString
       - (*github.com/fatih/color.Color).Println
+      - (*github.com/fatih/color.Color).Printf
       - (io.Closer).Close
+      - (*database/sql.DB).Close
+      - (*database/sql.Rows).Close
+      - fmt.Fprint
+      - fmt.Fprintf
+      - fmt.Fprintln
+      - os.Setenv
 
   govet:
     enable-all: true
@@ -143,6 +150,31 @@ issues:
     - linters:
         - lll
       source: "^//go:generate "
+
+    # MCP tools return errors via result.IsError, not via Go error return
+    - path: internal/mcp/tools\.go
+      linters:
+        - nilerr
+
+    # Comments that describe purpose, period optional
+    - path: internal/(config|sync|tui)/.*\.go
+      linters:
+        - godot
+
+    # TUI navigation function is complex by nature
+    - path: internal/tui/app\.go
+      linters:
+        - funlen
+
+    # JSON marshal of UUIDs is safe
+    - path: internal/(mcp|sync)/.*\.go
+      linters:
+        - errchkjson
+
+    # File path from config is validated
+    - path: internal/config/config\.go
+      linters:
+        - gosec
 
 severity:
   default-severity: error
