@@ -18,14 +18,14 @@ func (s *Server) registerResources() {
 		URI:         "bbs://topics",
 		Name:        "All Topics",
 		Description: "List of all active topics",
-		MimeType:    "application/json",
+		MIMEType:    "application/json",
 	}, s.handleTopicsResource)
 
 	s.mcp.AddResource(&mcp.Resource{
 		URI:         "bbs://recent",
 		Name:        "Recent Activity",
 		Description: "Recent threads and messages across all topics",
-		MimeType:    "text/markdown",
+		MIMEType:    "text/markdown",
 	}, s.handleRecentResource)
 
 	// Dynamic resources for threads and messages
@@ -33,14 +33,14 @@ func (s *Server) registerResources() {
 		URITemplate: "bbs://topics/{topic}/threads",
 		Name:        "Topic Threads",
 		Description: "Threads in a specific topic",
-		MimeType:    "application/json",
+		MIMEType:    "application/json",
 	}, s.handleTopicThreadsResource)
 
 	s.mcp.AddResourceTemplate(&mcp.ResourceTemplate{
 		URITemplate: "bbs://threads/{thread}/messages",
 		Name:        "Thread Messages",
 		Description: "Messages in a specific thread",
-		MimeType:    "text/markdown",
+		MIMEType:    "text/markdown",
 	}, s.handleThreadMessagesResource)
 }
 
@@ -52,9 +52,9 @@ func (s *Server) handleTopicsResource(ctx context.Context, req *mcp.ReadResource
 
 	data, _ := json.MarshalIndent(topics, "", "  ")
 	return &mcp.ReadResourceResult{
-		Contents: []mcp.ResourceContents{{
+		Contents: []*mcp.ResourceContents{{
 			URI:      "bbs://topics",
-			MimeType: "application/json",
+			MIMEType: "application/json",
 			Text:     string(data),
 		}},
 	}, nil
@@ -87,9 +87,9 @@ func (s *Server) handleRecentResource(ctx context.Context, req *mcp.ReadResource
 	}
 
 	return &mcp.ReadResourceResult{
-		Contents: []mcp.ResourceContents{{
+		Contents: []*mcp.ResourceContents{{
 			URI:      "bbs://recent",
-			MimeType: "text/markdown",
+			MIMEType: "text/markdown",
 			Text:     sb.String(),
 		}},
 	}, nil
@@ -115,9 +115,9 @@ func (s *Server) handleTopicThreadsResource(ctx context.Context, req *mcp.ReadRe
 
 	data, _ := json.MarshalIndent(threads, "", "  ")
 	return &mcp.ReadResourceResult{
-		Contents: []mcp.ResourceContents{{
+		Contents: []*mcp.ResourceContents{{
 			URI:      req.Params.URI,
-			MimeType: "application/json",
+			MIMEType: "application/json",
 			Text:     string(data),
 		}},
 	}, nil
@@ -153,9 +153,9 @@ func (s *Server) handleThreadMessagesResource(ctx context.Context, req *mcp.Read
 	}
 
 	return &mcp.ReadResourceResult{
-		Contents: []mcp.ResourceContents{{
+		Contents: []*mcp.ResourceContents{{
 			URI:      req.Params.URI,
-			MimeType: "text/markdown",
+			MIMEType: "text/markdown",
 			Text:     sb.String(),
 		}},
 	}, nil
