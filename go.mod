@@ -1,6 +1,8 @@
 module github.com/harper/bbs
 
-go 1.23
+go 1.24.0
+
+toolchain go1.24.11
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10

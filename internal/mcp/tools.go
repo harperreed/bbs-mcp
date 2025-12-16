@@ -77,7 +77,12 @@ func (s *Server) handleListTopics(ctx context.Context, req *mcp.CallToolRequest)
 	var args struct {
 		IncludeArchived bool `json:"include_archived"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	topics, err := db.ListTopics(s.db, args.IncludeArchived)
 	if err != nil {
@@ -87,7 +92,13 @@ func (s *Server) handleListTopics(ctx context.Context, req *mcp.CallToolRequest)
 		}, nil
 	}
 
-	result, _ := json.Marshal(topics)
+	result, err := json.Marshal(topics)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to marshal response: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: string(result)}},
 	}, nil
@@ -99,7 +110,12 @@ func (s *Server) handleCreateTopic(ctx context.Context, req *mcp.CallToolRequest
 		Description string `json:"description"`
 		AgentName   string `json:"agent_name"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	id := identity.GetIdentity(args.AgentName, "mcp")
 	topic := models.NewTopic(args.Name, args.Description, id)
@@ -121,7 +137,12 @@ func (s *Server) handleArchiveTopic(ctx context.Context, req *mcp.CallToolReques
 		Topic    string `json:"topic"`
 		Archived bool   `json:"archived"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	topicID, err := db.ResolveTopicID(s.db, args.Topic)
 	if err != nil {
@@ -151,7 +172,12 @@ func (s *Server) handleListThreads(ctx context.Context, req *mcp.CallToolRequest
 	var args struct {
 		Topic string `json:"topic"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	topicID, err := db.ResolveTopicID(s.db, args.Topic)
 	if err != nil {
@@ -169,7 +195,13 @@ func (s *Server) handleListThreads(ctx context.Context, req *mcp.CallToolRequest
 		}, nil
 	}
 
-	result, _ := json.Marshal(threads)
+	result, err := json.Marshal(threads)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to marshal response: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: string(result)}},
 	}, nil
@@ -182,7 +214,12 @@ func (s *Server) handleCreateThread(ctx context.Context, req *mcp.CallToolReques
 		Message   string `json:"message"`
 		AgentName string `json:"agent_name"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	topicID, err := db.ResolveTopicID(s.db, args.Topic)
 	if err != nil {
@@ -192,7 +229,13 @@ func (s *Server) handleCreateThread(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	topicUUID, _ := models.ParseUUID(topicID)
+	topicUUID, err := models.ParseUUID(topicID)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid topic ID: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 	id := identity.GetIdentity(args.AgentName, "mcp")
 	thread := models.NewThread(topicUUID, args.Subject, id)
 
@@ -206,7 +249,12 @@ func (s *Server) handleCreateThread(ctx context.Context, req *mcp.CallToolReques
 	// Post initial message if provided
 	if args.Message != "" {
 		msg := models.NewMessage(thread.ID, args.Message, id)
-		db.CreateMessage(s.db, msg)
+		if err := db.CreateMessage(s.db, msg); err != nil {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("thread created but failed to post message: %v", err)}},
+				IsError: true,
+			}, nil
+		}
 	}
 
 	return &mcp.CallToolResult{
@@ -219,7 +267,12 @@ func (s *Server) handleStickyThread(ctx context.Context, req *mcp.CallToolReques
 		Thread string `json:"thread"`
 		Sticky bool   `json:"sticky"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	if err := db.SetThreadSticky(s.db, args.Thread, args.Sticky); err != nil {
 		return &mcp.CallToolResult{
@@ -241,7 +294,12 @@ func (s *Server) handleListMessages(ctx context.Context, req *mcp.CallToolReques
 	var args struct {
 		Thread string `json:"thread"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	messages, err := db.ListMessages(s.db, args.Thread)
 	if err != nil {
@@ -251,7 +309,13 @@ func (s *Server) handleListMessages(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	result, _ := json.Marshal(messages)
+	result, err := json.Marshal(messages)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to marshal response: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: string(result)}},
 	}, nil
@@ -263,7 +327,12 @@ func (s *Server) handlePostMessage(ctx context.Context, req *mcp.CallToolRequest
 		Content   string `json:"content"`
 		AgentName string `json:"agent_name"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	thread, err := db.GetThreadByID(s.db, args.Thread)
 	if err != nil {
@@ -293,7 +362,12 @@ func (s *Server) handleEditMessage(ctx context.Context, req *mcp.CallToolRequest
 		MessageID string `json:"message_id"`
 		Content   string `json:"content"`
 	}
-	json.Unmarshal(req.Params.Arguments, &args)
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
+			IsError: true,
+		}, nil
+	}
 
 	if err := db.UpdateMessage(s.db, args.MessageID, args.Content); err != nil {
 		return &mcp.CallToolResult{
