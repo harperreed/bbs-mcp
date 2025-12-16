@@ -4,7 +4,6 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -28,10 +27,8 @@ func TestGetVaultDBPath(t *testing.T) {
 
 func TestLoadNonExistent(t *testing.T) {
 	// Temporarily override config path
-	origXDG := os.Getenv("XDG_CONFIG_HOME")
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer os.Setenv("XDG_CONFIG_HOME", origXDG)
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -46,10 +43,8 @@ func TestLoadNonExistent(t *testing.T) {
 }
 
 func TestSaveAndLoad(t *testing.T) {
-	origXDG := os.Getenv("XDG_CONFIG_HOME")
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer os.Setenv("XDG_CONFIG_HOME", origXDG)
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	cfg := &Config{
 		Server:   "https://test.example.com",

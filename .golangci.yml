@@ -146,6 +146,11 @@ issues:
         - gocognit
         - funlen
 
+    # CLI commands use fmt/color output where error checking is not needed
+    - path: cmd/bbs/.*\.go
+      linters:
+        - errcheck
+
     # Ignore long lines in go:generate comments
     - linters:
         - lll
