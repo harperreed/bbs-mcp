@@ -4,8 +4,8 @@
 package sync
 
 import (
+	"context"
 	"database/sql"
-	"os"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -13,10 +13,8 @@ import (
 
 func TestNewSyncer(t *testing.T) {
 	// Use temp dir to avoid interfering with real config
-	origXDG := os.Getenv("XDG_CONFIG_HOME")
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer os.Setenv("XDG_CONFIG_HOME", origXDG)
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -31,35 +29,58 @@ func TestNewSyncer(t *testing.T) {
 	if syncer == nil {
 		t.Error("NewSyncer returned nil")
 	}
+	defer syncer.Close()
 }
 
 func TestSyncerDisabledByDefault(t *testing.T) {
-	origXDG := os.Getenv("XDG_CONFIG_HOME")
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer os.Setenv("XDG_CONFIG_HOME", origXDG)
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	db, _ := sql.Open("sqlite", ":memory:")
 	defer db.Close()
 
 	syncer, _ := NewSyncer(db)
+	defer syncer.Close()
+
 	if syncer.IsEnabled() {
 		t.Error("Syncer should be disabled when not configured")
 	}
 }
 
 func TestGetPendingCount(t *testing.T) {
-	origXDG := os.Getenv("XDG_CONFIG_HOME")
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer os.Setenv("XDG_CONFIG_HOME", origXDG)
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	db, _ := sql.Open("sqlite", ":memory:")
 	defer db.Close()
 
 	syncer, _ := NewSyncer(db)
-	count := syncer.GetPendingCount()
+	defer syncer.Close()
+
+	count, err := syncer.GetPendingCount(context.Background())
+	if err != nil {
+		t.Fatalf("GetPendingCount failed: %v", err)
+	}
 	if count != 0 {
 		t.Errorf("Expected 0 pending, got %d", count)
+	}
+}
+
+func TestLastSyncedSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	db, _ := sql.Open("sqlite", ":memory:")
+	defer db.Close()
+
+	syncer, _ := NewSyncer(db)
+	defer syncer.Close()
+
+	seq, err := syncer.LastSyncedSeq(context.Background())
+	if err != nil {
+		t.Fatalf("LastSyncedSeq failed: %v", err)
+	}
+	if seq != "0" {
+		t.Errorf("Expected seq '0', got '%s'", seq)
 	}
 }

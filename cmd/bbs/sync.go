@@ -109,8 +109,12 @@ func runSyncStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer syncer.Close()
 
-	pending := syncer.GetPendingCount()
+	pending, err := syncer.GetPendingCount(cmd.Context())
+	if err != nil {
+		return err
+	}
 	if pending > 0 {
 		color.Yellow("Pending changes: %d", pending)
 	} else {
@@ -125,6 +129,7 @@ func runSyncNow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer syncer.Close()
 
 	if !syncer.IsEnabled() {
 		return fmt.Errorf("sync not configured - run 'bbs sync login' first")
