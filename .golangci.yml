@@ -73,6 +73,7 @@ linters:
     - errchkjson        # UUID marshaling is safe
     - funlen            # TUI and CLI functions are naturally long
     - errcheck          # Too noisy for CLI output and test code
+    - nestif            # CLI status functions have natural nesting
 
 linters-settings:
   errcheck:
