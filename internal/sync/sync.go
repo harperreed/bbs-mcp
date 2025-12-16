@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"suitesync/vault"
@@ -206,7 +207,17 @@ func (s *Syncer) SyncWithEvents(ctx context.Context, events *vault.SyncEvents) e
 		return errors.New("sync not configured - run 'bbs sync login' first")
 	}
 
-	return vault.Sync(ctx, s.store, s.client, s.keys, s.config.UserID, s.applyChange, events)
+	err := vault.Sync(ctx, s.store, s.client, s.keys, s.config.UserID, s.applyChange, events)
+	if err != nil {
+		// Check for device-related 403 errors (v0.3.0 device validation)
+		errStr := err.Error()
+		if strings.Contains(errStr, "403") ||
+			strings.Contains(errStr, "device") ||
+			strings.Contains(errStr, "not registered") {
+			return fmt.Errorf("device not registered - please run 'bbs sync login' again: %w", err)
+		}
+	}
+	return err
 }
 
 // applyChange applies a remote change to the local database

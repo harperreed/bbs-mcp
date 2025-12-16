@@ -17,7 +17,7 @@ require (
 	suitesync v0.0.0-00010101000000-000000000000
 )
 
-replace suitesync => github.com/harperreed/sweet v0.2.4
+replace suitesync => github.com/harperreed/sweet v0.3.0
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

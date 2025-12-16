@@ -6,7 +6,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -234,6 +233,11 @@ func runSyncLogin(cmd *cobra.Command, args []string) error {
 		serverURL = "https://api.storeusa.org"
 	}
 
+	// Ensure device ID exists BEFORE login (v0.3.0 requirement)
+	if cfg.DeviceID == "" {
+		cfg.DeviceID = ulid.Make().String()
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 
 	// Get email
@@ -263,10 +267,11 @@ func runSyncLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid recovery phrase: %w", err)
 	}
 
-	// Login to server
+	// Login to server with device registration (v0.3.0 API)
 	fmt.Printf("\nLogging in to %s...\n", serverURL)
+	fmt.Printf("Registering device: %s\n", cfg.DeviceID[:8])
 	client := vault.NewPBAuthClient(serverURL)
-	result, err := client.Login(context.Background(), email, password)
+	result, err := client.Login(context.Background(), email, password, cfg.DeviceID)
 	if err != nil {
 		return fmt.Errorf("login failed: %w", err)
 	}
@@ -285,9 +290,6 @@ func runSyncLogin(cmd *cobra.Command, args []string) error {
 	cfg.RefreshToken = result.RefreshToken
 	cfg.TokenExpires = result.Token.Expires.Format(time.RFC3339)
 	cfg.DerivedKey = derivedKeyHex
-	if cfg.DeviceID == "" {
-		cfg.DeviceID = randHex(16)
-	}
 	if cfg.VaultDB == "" {
 		cfg.VaultDB = config.GetVaultDBPath()
 	}
@@ -297,6 +299,7 @@ func runSyncLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	color.Green("\n✓ Logged in to BBS sync")
+	fmt.Printf("Device ID: %s\n", cfg.DeviceID[:8])
 	fmt.Printf("Token expires: %s\n", result.Token.Expires.Format(time.RFC3339))
 
 	return nil
@@ -458,11 +461,4 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", m, s)
 	}
 	return fmt.Sprintf("%ds", s)
-}
-
-// randHex returns n random bytes hex-encoded (2n chars)
-func randHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }
