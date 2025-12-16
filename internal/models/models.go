@@ -9,6 +9,13 @@ import (
 	"github.com/google/uuid"
 )
 
+type UUID = uuid.UUID
+
+// ParseUUID parses a string into a UUID.
+func ParseUUID(s string) (uuid.UUID, error) {
+	return uuid.Parse(s)
+}
+
 // Topic represents a message board category.
 type Topic struct {
 	ID          uuid.UUID
