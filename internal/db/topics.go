@@ -100,7 +100,10 @@ func scanTopic(row *sql.Row) (*models.Topic, error) {
 	if err != nil {
 		return nil, err
 	}
-	topic.ID, _ = parseUUID(id)
+	topic.ID, err = models.ParseUUID(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid topic ID %q: %w", id, err)
+	}
 	return &topic, nil
 }
 
@@ -112,11 +115,9 @@ func scanTopicFromRows(rows *sql.Rows) (*models.Topic, error) {
 	if err != nil {
 		return nil, err
 	}
-	topic.ID, _ = parseUUID(id)
+	topic.ID, err = models.ParseUUID(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid topic ID %q: %w", id, err)
+	}
 	return &topic, nil
-}
-
-func parseUUID(s string) (uuid models.UUID, err error) {
-	// Simple wrapper to handle UUID parsing
-	return models.ParseUUID(s)
 }

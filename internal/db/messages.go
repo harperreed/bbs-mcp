@@ -76,8 +76,14 @@ func scanMessage(row *sql.Row) (*models.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	msg.ID, _ = models.ParseUUID(id)
-	msg.ThreadID, _ = models.ParseUUID(threadID)
+	msg.ID, err = models.ParseUUID(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid message ID %q: %w", id, err)
+	}
+	msg.ThreadID, err = models.ParseUUID(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid thread ID %q: %w", threadID, err)
+	}
 	if editedAt.Valid {
 		msg.EditedAt = &editedAt.Time
 	}
@@ -93,8 +99,14 @@ func scanMessageFromRows(rows *sql.Rows) (*models.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	msg.ID, _ = models.ParseUUID(id)
-	msg.ThreadID, _ = models.ParseUUID(threadID)
+	msg.ID, err = models.ParseUUID(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid message ID %q: %w", id, err)
+	}
+	msg.ThreadID, err = models.ParseUUID(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid thread ID %q: %w", threadID, err)
+	}
 	if editedAt.Valid {
 		msg.EditedAt = &editedAt.Time
 	}

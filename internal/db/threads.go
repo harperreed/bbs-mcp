@@ -73,8 +73,14 @@ func scanThread(row *sql.Row) (*models.Thread, error) {
 	if err != nil {
 		return nil, err
 	}
-	thread.ID, _ = models.ParseUUID(id)
-	thread.TopicID, _ = models.ParseUUID(topicID)
+	thread.ID, err = models.ParseUUID(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid thread ID %q: %w", id, err)
+	}
+	thread.TopicID, err = models.ParseUUID(topicID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid topic ID %q: %w", topicID, err)
+	}
 	return &thread, nil
 }
 
@@ -86,7 +92,13 @@ func scanThreadFromRows(rows *sql.Rows) (*models.Thread, error) {
 	if err != nil {
 		return nil, err
 	}
-	thread.ID, _ = models.ParseUUID(id)
-	thread.TopicID, _ = models.ParseUUID(topicID)
+	thread.ID, err = models.ParseUUID(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid thread ID %q: %w", id, err)
+	}
+	thread.TopicID, err = models.ParseUUID(topicID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid topic ID %q: %w", topicID, err)
+	}
 	return &thread, nil
 }
