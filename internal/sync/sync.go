@@ -32,11 +32,12 @@ const (
 
 // Syncer handles synchronization with vault
 type Syncer struct {
-	config *config.Config
-	store  *vault.Store
-	keys   vault.Keys
-	client *vault.Client
-	appDB  *sql.DB
+	config      *config.Config
+	store       *vault.Store
+	keys        vault.Keys
+	client      *vault.Client
+	vaultSyncer *vault.Syncer
+	appDB       *sql.DB
 }
 
 // NewSyncer creates a new syncer from config
@@ -70,19 +71,35 @@ func NewSyncer(appDB *sql.DB) (*Syncer, error) {
 		return nil, fmt.Errorf("open vault store: %w", err)
 	}
 
+	var tokenExpires time.Time
+	if cfg.TokenExpires != "" {
+		tokenExpires, _ = time.Parse(time.RFC3339, cfg.TokenExpires)
+	}
+
 	client := vault.NewClient(vault.SyncConfig{
-		BaseURL:   cfg.Server,
-		AppID:     AppID,
-		DeviceID:  cfg.DeviceID,
-		AuthToken: cfg.Token,
+		BaseURL:      cfg.Server,
+		AppID:        AppID,
+		DeviceID:     cfg.DeviceID,
+		AuthToken:    cfg.Token,
+		RefreshToken: cfg.RefreshToken,
+		TokenExpires: tokenExpires,
+		OnTokenRefresh: func(token, refreshToken string, expires time.Time) {
+			cfg.Token = token
+			cfg.RefreshToken = refreshToken
+			cfg.TokenExpires = expires.Format(time.RFC3339)
+			if err := cfg.Save(); err != nil {
+				fmt.Printf("warning: failed to save refreshed token: %v\n", err)
+			}
+		},
 	})
 
 	return &Syncer{
-		config: cfg,
-		store:  store,
-		keys:   keys,
-		client: client,
-		appDB:  appDB,
+		config:      cfg,
+		store:       store,
+		keys:        keys,
+		client:      client,
+		vaultSyncer: vault.NewSyncer(store, client, keys, cfg.UserID),
+		appDB:       appDB,
 	}, nil
 }
 
@@ -96,17 +113,17 @@ func (s *Syncer) Close() error {
 
 // IsEnabled returns true if sync is enabled
 func (s *Syncer) IsEnabled() bool {
-	return s.config.IsConfigured() && s.config.AutoSync
+	return s.config.IsConfigured() && s.store != nil && s.vaultSyncer != nil
 }
 
 // canSync returns true if we have all requirements to sync
 func (s *Syncer) canSync() bool {
-	return s.config.Server != "" && s.config.Token != "" && s.config.UserID != "" && s.store != nil
+	return s.config.Server != "" && s.config.Token != "" && s.config.UserID != "" && s.store != nil && s.vaultSyncer != nil
 }
 
 // QueueTopicChange queues a topic change for sync
 func (s *Syncer) QueueTopicChange(ctx context.Context, topic *models.Topic, op vault.Op) error {
-	if !s.IsEnabled() || s.store == nil {
+	if s.vaultSyncer == nil {
 		return nil
 	}
 
@@ -127,7 +144,7 @@ func (s *Syncer) QueueTopicChange(ctx context.Context, topic *models.Topic, op v
 
 // QueueThreadChange queues a thread change for sync
 func (s *Syncer) QueueThreadChange(ctx context.Context, thread *models.Thread, op vault.Op) error {
-	if !s.IsEnabled() || s.store == nil {
+	if s.vaultSyncer == nil {
 		return nil
 	}
 
@@ -148,7 +165,7 @@ func (s *Syncer) QueueThreadChange(ctx context.Context, thread *models.Thread, o
 
 // QueueMessageChange queues a message change for sync
 func (s *Syncer) QueueMessageChange(ctx context.Context, msg *models.Message, op vault.Op) error {
-	if !s.IsEnabled() || s.store == nil {
+	if s.vaultSyncer == nil {
 		return nil
 	}
 
@@ -170,27 +187,12 @@ func (s *Syncer) QueueMessageChange(ctx context.Context, msg *models.Message, op
 }
 
 func (s *Syncer) queueChange(ctx context.Context, entity, entityID string, op vault.Op, payload map[string]any) error {
-	change, err := vault.NewChange(entity, entityID, op, payload)
-	if err != nil {
-		return fmt.Errorf("create change: %w", err)
-	}
-	if op == vault.OpDelete {
-		change.Deleted = true
+	if s.vaultSyncer == nil {
+		return nil
 	}
 
-	plain, err := json.Marshal(change)
-	if err != nil {
-		return fmt.Errorf("marshal change: %w", err)
-	}
-
-	aad := change.AAD(s.config.UserID, s.config.DeviceID)
-	env, err := vault.Encrypt(s.keys.EncKey, plain, aad)
-	if err != nil {
-		return fmt.Errorf("encrypt change: %w", err)
-	}
-
-	if err := s.store.EnqueueEncryptedChange(ctx, change, s.config.UserID, s.config.DeviceID, env); err != nil {
-		return fmt.Errorf("enqueue change: %w", err)
+	if _, err := s.vaultSyncer.QueueChange(ctx, entity, entityID, op, payload); err != nil {
+		return fmt.Errorf("queue change: %w", err)
 	}
 
 	// Auto-sync if enabled

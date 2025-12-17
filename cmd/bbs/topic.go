@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -12,6 +13,8 @@ import (
 	"github.com/harper/bbs/internal/db"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
+	"github.com/harper/bbs/internal/sync"
+	"github.com/harperreed/sweet/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -94,6 +97,11 @@ func runTopicNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create topic: %w", err)
 	}
 
+	// Queue sync change (best-effort, won't fail if sync not configured)
+	if err := sync.TryQueueTopicChange(context.Background(), dbConn, topic, vault.OpUpsert); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
+	}
+
 	color.Green("Created topic: %s", name)
 	fmt.Printf("ID: %s\n", topic.ID.String()[:8])
 	return nil
@@ -108,6 +116,15 @@ func runTopicArchive(cmd *cobra.Command, args []string) error {
 	archived := !unarchive
 	if err := db.ArchiveTopic(dbConn, topicID, archived); err != nil {
 		return err
+	}
+
+	// Get updated topic for sync
+	topic, err := db.GetTopicByID(dbConn, topicID)
+	if err == nil {
+		// Queue sync change (best-effort, won't fail if sync not configured)
+		if err := sync.TryQueueTopicChange(context.Background(), dbConn, topic, vault.OpUpsert); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
+		}
 	}
 
 	if archived {

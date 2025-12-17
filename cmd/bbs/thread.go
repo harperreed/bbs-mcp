@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -12,6 +13,8 @@ import (
 	"github.com/harper/bbs/internal/db"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
+	"github.com/harper/bbs/internal/sync"
+	"github.com/harperreed/sweet/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -100,6 +103,11 @@ func runThreadNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create thread: %w", err)
 	}
 
+	// Queue sync change (best-effort, won't fail if sync not configured)
+	if err := sync.TryQueueThreadChange(context.Background(), dbConn, thread, vault.OpUpsert); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
+	}
+
 	color.Green("Created thread: %s", args[1])
 	fmt.Printf("ID: %s\n", thread.ID.String()[:8])
 	return nil
@@ -145,6 +153,15 @@ func runThreadSticky(cmd *cobra.Command, args []string) error {
 	sticky := !unsticky
 	if err := db.SetThreadSticky(dbConn, args[0], sticky); err != nil {
 		return err
+	}
+
+	// Get updated thread for sync
+	thread, err := db.GetThreadByID(dbConn, args[0])
+	if err == nil {
+		// Queue sync change (best-effort, won't fail if sync not configured)
+		if err := sync.TryQueueThreadChange(context.Background(), dbConn, thread, vault.OpUpsert); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
+		}
 	}
 
 	if sticky {

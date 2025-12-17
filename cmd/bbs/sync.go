@@ -59,10 +59,10 @@ var syncNowCmd = &cobra.Command{
 var syncLoginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Login to sync server",
-	Long: `Authenticate with the sync server using email, password, and recovery phrase.
+	Long: `Login to sync service with your credentials and recovery phrase.
 
-The recovery phrase is your BIP39 mnemonic that was given to you when you
-registered. Only the derived key is stored locally, not the mnemonic.`,
+Your recovery phrase is used to derive encryption keys - the server
+never sees your data in plaintext.`,
 	RunE: runSyncLogin,
 }
 
@@ -256,20 +256,29 @@ func runSyncLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read password: %w", err)
 	}
 	password := string(passwordBytes)
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
 
 	// Get mnemonic
-	fmt.Print("\nEnter your recovery phrase:\n> ")
+	fmt.Print("Recovery phrase (12 or 24 words): ")
 	mnemonic, _ := reader.ReadString('\n')
 	mnemonic = strings.TrimSpace(mnemonic)
 
 	// Validate mnemonic
-	if _, err := vault.ParseMnemonic(mnemonic); err != nil {
-		return fmt.Errorf("invalid recovery phrase: %w", err)
+	parsed, err := vault.ParseMnemonic(mnemonic)
+	if err != nil {
+		return fmt.Errorf("invalid recovery phrase: must be 12 or 24 words")
 	}
+	// Verify it's actually 12 or 24 words
+	wordCount := len(strings.Fields(mnemonic))
+	if wordCount != 12 && wordCount != 24 {
+		return fmt.Errorf("invalid recovery phrase: must be 12 or 24 words")
+	}
+	_ = parsed
 
 	// Login to server with device registration (v0.3.0 API)
 	fmt.Printf("\nLogging in to %s...\n", serverURL)
-	fmt.Printf("Registering device: %s\n", cfg.DeviceID[:8])
 	client := vault.NewPBAuthClient(serverURL)
 	result, err := client.Login(context.Background(), email, password, cfg.DeviceID)
 	if err != nil {
@@ -298,9 +307,11 @@ func runSyncLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	color.Green("\n✓ Logged in to BBS sync")
-	fmt.Printf("Device ID: %s\n", cfg.DeviceID[:8])
-	fmt.Printf("Token expires: %s\n", result.Token.Expires.Format(time.RFC3339))
+	color.Green("\n✓ Logged in successfully")
+	fmt.Printf("  User ID: %s\n", cfg.UserID)
+	fmt.Printf("  Device: %s\n", cfg.DeviceID[:8]+"...")
+	fmt.Printf("  Token expires: %s\n", result.Token.Expires.Format(time.RFC3339))
+	fmt.Printf("\nRun 'bbs sync now' to sync your data.\n")
 
 	return nil
 }

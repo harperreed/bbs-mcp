@@ -4,12 +4,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
 
 	"github.com/fatih/color"
 	"github.com/harper/bbs/internal/db"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
+	"github.com/harper/bbs/internal/sync"
+	"github.com/harperreed/sweet/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -45,6 +49,11 @@ func runPost(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to post message: %w", err)
 	}
 
+	// Queue sync change (best-effort, won't fail if sync not configured)
+	if err := sync.TryQueueMessageChange(context.Background(), dbConn, msg, vault.OpUpsert); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
+	}
+
 	color.Green("Posted to: %s", thread.Subject)
 	fmt.Printf("Message ID: %s\n", msg.ID.String()[:8])
 	return nil
@@ -53,6 +62,15 @@ func runPost(cmd *cobra.Command, args []string) error {
 func runEdit(cmd *cobra.Command, args []string) error {
 	if err := db.UpdateMessage(dbConn, args[0], args[1]); err != nil {
 		return err
+	}
+
+	// Get updated message for sync
+	msg, err := db.GetMessageByID(dbConn, args[0])
+	if err == nil {
+		// Queue sync change (best-effort, won't fail if sync not configured)
+		if err := sync.TryQueueMessageChange(context.Background(), dbConn, msg, vault.OpUpsert); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
+		}
 	}
 
 	color.Green("Message updated")
