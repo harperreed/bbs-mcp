@@ -77,12 +77,13 @@ func NewSyncer(appDB *sql.DB) (*Syncer, error) {
 	}
 
 	client := vault.NewClient(vault.SyncConfig{
-		BaseURL:      cfg.Server,
-		AppID:        AppID,
-		DeviceID:     cfg.DeviceID,
-		AuthToken:    cfg.Token,
-		RefreshToken: cfg.RefreshToken,
-		TokenExpires: tokenExpires,
+		BaseURL:                 cfg.Server,
+		AppID:                   AppID,
+		DeviceID:                cfg.DeviceID,
+		AuthToken:               cfg.Token,
+		RefreshToken:            cfg.RefreshToken,
+		TokenExpires:            tokenExpires,
+		AllowUnprefixedEntities: true, // Enable backward compat for legacy data
 		OnTokenRefresh: func(token, refreshToken string, expires time.Time) {
 			cfg.Token = token
 			cfg.RefreshToken = refreshToken
