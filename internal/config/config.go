@@ -19,14 +19,13 @@ type Config struct {
 	DerivedKey   string `json:"derived_key"`
 	DeviceID     string `json:"device_id"`
 	VaultDB      string `json:"vault_db"`
-	AutoSync     bool   `json:"auto_sync"`
 }
 
 // GetConfigPath returns the config file path
 func GetConfigPath() string {
-	homeDir, _ := os.UserHomeDir()
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" {
+		homeDir, _ := os.UserHomeDir()
 		configDir = filepath.Join(homeDir, ".config")
 	}
 	return filepath.Join(configDir, "bbs", "sync.json")
@@ -34,9 +33,9 @@ func GetConfigPath() string {
 
 // GetVaultDBPath returns the vault database path
 func GetVaultDBPath() string {
-	homeDir, _ := os.UserHomeDir()
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" {
+		homeDir, _ := os.UserHomeDir()
 		configDir = filepath.Join(homeDir, ".config")
 	}
 	return filepath.Join(configDir, "bbs", "vault.db")
@@ -48,7 +47,7 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Config{AutoSync: true}, nil
+			return &Config{}, nil
 		}
 		return nil, err
 	}

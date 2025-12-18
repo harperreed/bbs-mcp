@@ -37,9 +37,6 @@ func TestLoadNonExistent(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("Load returned nil config")
 	}
-	if !cfg.AutoSync {
-		t.Error("Default config should have AutoSync enabled")
-	}
 }
 
 func TestSaveAndLoad(t *testing.T) {
@@ -49,7 +46,6 @@ func TestSaveAndLoad(t *testing.T) {
 	cfg := &Config{
 		Server:   "https://test.example.com",
 		DeviceID: "test-device",
-		AutoSync: true,
 	}
 
 	if err := cfg.Save(); err != nil {

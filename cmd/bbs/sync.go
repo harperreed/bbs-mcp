@@ -107,7 +107,6 @@ func runSyncInit(cmd *cobra.Command, args []string) error {
 
 	cfg.DeviceID = ulid.Make().String()
 	cfg.VaultDB = config.GetVaultDBPath()
-	cfg.AutoSync = true
 
 	if err := cfg.Save(); err != nil {
 		return err
@@ -134,7 +133,6 @@ func runSyncStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("User ID:   %s\n", valueOrNone(cfg.UserID))
 	fmt.Printf("Device ID: %s\n", valueOrNone(cfg.DeviceID))
 	fmt.Printf("Vault DB:  %s\n", valueOrNone(cfg.VaultDB))
-	fmt.Printf("AutoSync:  %v\n", cfg.AutoSync)
 
 	if cfg.DerivedKey != "" {
 		fmt.Println("Keys:      " + color.GreenString("✓ configured"))
@@ -311,7 +309,20 @@ func runSyncLogin(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  User ID: %s\n", cfg.UserID)
 	fmt.Printf("  Device: %s\n", cfg.DeviceID[:8]+"...")
 	fmt.Printf("  Token expires: %s\n", result.Token.Expires.Format(time.RFC3339))
-	fmt.Printf("\nRun 'bbs sync now' to sync your data.\n")
+
+	// Sync immediately after login to pull existing data
+	fmt.Println("\nSyncing to pull existing data...")
+	syncer, err := sync.NewSyncer(dbConn)
+	if err != nil {
+		return fmt.Errorf("create syncer: %w", err)
+	}
+	defer syncer.Close()
+
+	if err := syncer.Sync(cmd.Context()); err != nil {
+		return fmt.Errorf("sync after login: %w", err)
+	}
+
+	color.Green("✓ Sync complete")
 
 	return nil
 }
