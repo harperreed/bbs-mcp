@@ -5,6 +5,7 @@ package charm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -153,7 +154,7 @@ func (c *Client) CreateTopic(t *models.Topic) error {
 func (c *Client) GetTopic(id uuid.UUID) (*models.Topic, error) {
 	data, err := c.kv.Get(topicKey(id))
 	if err != nil {
-		if err == badger.ErrKeyNotFound {
+		if errors.Is(err, badger.ErrKeyNotFound) {
 			return nil, fmt.Errorf("topic not found: %s", id)
 		}
 		return nil, err
@@ -248,7 +249,7 @@ func (c *Client) CreateThread(t *models.Thread) error {
 func (c *Client) GetThread(id uuid.UUID) (*models.Thread, error) {
 	data, err := c.kv.Get(threadKey(id))
 	if err != nil {
-		if err == badger.ErrKeyNotFound {
+		if errors.Is(err, badger.ErrKeyNotFound) {
 			return nil, fmt.Errorf("thread not found: %s", id)
 		}
 		return nil, err
@@ -329,7 +330,7 @@ func (c *Client) CreateMessage(m *models.Message) error {
 func (c *Client) GetMessage(id uuid.UUID) (*models.Message, error) {
 	data, err := c.kv.Get(messageKey(id))
 	if err != nil {
-		if err == badger.ErrKeyNotFound {
+		if errors.Is(err, badger.ErrKeyNotFound) {
 			return nil, fmt.Errorf("message not found: %s", id)
 		}
 		return nil, err
@@ -407,7 +408,7 @@ func (c *Client) CreateAttachment(a *models.Attachment) error {
 func (c *Client) GetAttachment(id uuid.UUID) (*models.Attachment, error) {
 	data, err := c.kv.Get(attachmentKey(id))
 	if err != nil {
-		if err == badger.ErrKeyNotFound {
+		if errors.Is(err, badger.ErrKeyNotFound) {
 			return nil, fmt.Errorf("attachment not found: %s", id)
 		}
 		return nil, err

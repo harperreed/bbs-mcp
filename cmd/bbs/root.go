@@ -14,10 +14,7 @@ import (
 	"github.com/harper/bbs/internal/tui"
 )
 
-var (
-	identityFlag string
-	charmClient  *charm.Client
-)
+var identityFlag string
 
 var rootCmd = &cobra.Command{
 	Use:   "bbs",
