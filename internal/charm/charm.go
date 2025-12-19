@@ -45,6 +45,7 @@ type Client struct {
 
 // InitGlobal initializes the global Charm KV client.
 // This is thread-safe and will only initialize once.
+// Automatically falls back to read-only mode if another process holds the lock.
 func InitGlobal() error {
 	globalOnce.Do(func() {
 		// Set CHARM_HOST if not already set
@@ -52,13 +53,15 @@ func InitGlobal() error {
 			os.Setenv("CHARM_HOST", DefaultCharmHost)
 		}
 
-		globalKV, initErr = kv.OpenWithDefaults(DBName)
+		globalKV, initErr = kv.OpenWithDefaultsFallback(DBName)
 		if initErr != nil {
 			return
 		}
 
-		// Sync on startup to pull remote changes
-		initErr = globalKV.Sync()
+		// Sync on startup to pull remote changes (skip in read-only mode)
+		if !globalKV.IsReadOnly() {
+			initErr = globalKV.Sync()
+		}
 	})
 	return initErr
 }
@@ -95,6 +98,12 @@ func (c *Client) ID() (string, error) {
 func (c *Client) IsLinked() bool {
 	_, err := c.ID()
 	return err == nil
+}
+
+// IsReadOnly returns true if the database is open in read-only mode.
+// This happens when another process (like an MCP server) holds the lock.
+func (c *Client) IsReadOnly() bool {
+	return c.kv.IsReadOnly()
 }
 
 // Sync pulls remote changes from Charm Cloud.

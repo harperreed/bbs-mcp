@@ -4,8 +4,8 @@ go 1.24.0
 
 toolchain go1.24.11
 
-// Use self-hosted charm fork with CHARM_HOST support
-replace github.com/charmbracelet/charm => github.com/2389-research/charm v0.0.0-20251219145900-e7eed68720a2
+// Use self-hosted charm fork with CHARM_HOST support and read-only fallback
+replace github.com/charmbracelet/charm => github.com/2389-research/charm v0.0.0-20251219202940-c2de8571a99a
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -16,7 +16,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.1.0
 	github.com/spf13/cobra v1.10.2
-	modernc.org/sqlite v1.40.1
 )
 
 require (
@@ -60,7 +59,6 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
@@ -75,7 +73,5 @@ require (
 	golang.org/x/term v0.38.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
-	modernc.org/libc v1.66.10 // indirect
-	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.40.1 // indirect
 )
