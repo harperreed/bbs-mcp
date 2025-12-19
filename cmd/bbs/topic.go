@@ -4,18 +4,16 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
 
 	"github.com/fatih/color"
-	"github.com/harper/bbs/internal/db"
+	"github.com/spf13/cobra"
+
+	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
-	"github.com/harper/bbs/internal/sync"
-	"github.com/harperreed/sweet/vault"
-	"github.com/spf13/cobra"
 )
 
 var topicCmd = &cobra.Command{
@@ -65,7 +63,12 @@ func init() {
 }
 
 func runTopicList(cmd *cobra.Command, args []string) error {
-	topics, err := db.ListTopics(dbConn, showArchived)
+	client, err := charm.Global()
+	if err != nil {
+		return err
+	}
+
+	topics, err := client.ListTopics(showArchived)
 	if err != nil {
 		return err
 	}
@@ -84,6 +87,11 @@ func runTopicList(cmd *cobra.Command, args []string) error {
 }
 
 func runTopicNew(cmd *cobra.Command, args []string) error {
+	client, err := charm.Global()
+	if err != nil {
+		return err
+	}
+
 	name := args[0]
 	description := ""
 	if len(args) > 1 {
@@ -93,13 +101,8 @@ func runTopicNew(cmd *cobra.Command, args []string) error {
 	id := identity.GetIdentity(identityFlag, "cli")
 	topic := models.NewTopic(name, description, id)
 
-	if err := db.CreateTopic(dbConn, topic); err != nil {
+	if err := client.CreateTopic(topic); err != nil {
 		return fmt.Errorf("failed to create topic: %w", err)
-	}
-
-	// Queue sync change (best-effort, won't fail if sync not configured)
-	if err := sync.TryQueueTopicChange(context.Background(), dbConn, topic, vault.OpUpsert); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
 	}
 
 	color.Green("Created topic: %s", name)
@@ -108,23 +111,19 @@ func runTopicNew(cmd *cobra.Command, args []string) error {
 }
 
 func runTopicArchive(cmd *cobra.Command, args []string) error {
-	topicID, err := db.ResolveTopicID(dbConn, args[0])
+	client, err := charm.Global()
+	if err != nil {
+		return err
+	}
+
+	topic, err := client.ResolveTopic(args[0])
 	if err != nil {
 		return err
 	}
 
 	archived := !unarchive
-	if err := db.ArchiveTopic(dbConn, topicID, archived); err != nil {
+	if err := client.ArchiveTopic(topic.ID, archived); err != nil {
 		return err
-	}
-
-	// Get updated topic for sync
-	topic, err := db.GetTopicByID(dbConn, topicID)
-	if err == nil {
-		// Queue sync change (best-effort, won't fail if sync not configured)
-		if err := sync.TryQueueTopicChange(context.Background(), dbConn, topic, vault.OpUpsert); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
-		}
 	}
 
 	if archived {
@@ -136,12 +135,14 @@ func runTopicArchive(cmd *cobra.Command, args []string) error {
 }
 
 func runTopicShow(cmd *cobra.Command, args []string) error {
-	topic, err := db.GetTopicByName(dbConn, args[0])
+	client, err := charm.Global()
 	if err != nil {
-		topic, err = db.GetTopicByID(dbConn, args[0])
-		if err != nil {
-			return fmt.Errorf("topic not found: %s", args[0])
-		}
+		return err
+	}
+
+	topic, err := client.ResolveTopic(args[0])
+	if err != nil {
+		return fmt.Errorf("topic not found: %s", args[0])
 	}
 
 	fmt.Printf("Topic: %s\n", topic.Name)
@@ -153,7 +154,7 @@ func runTopicShow(cmd *cobra.Command, args []string) error {
 	}
 
 	// Show recent threads
-	threads, _ := db.ListThreads(dbConn, topic.ID.String())
+	threads, _ := client.ListThreads(topic.ID)
 	if len(threads) > 0 {
 		fmt.Printf("\nRecent threads (%d):\n", len(threads))
 		for i, t := range threads {

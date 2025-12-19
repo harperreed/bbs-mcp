@@ -4,18 +4,16 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
 
 	"github.com/fatih/color"
-	"github.com/harper/bbs/internal/db"
+	"github.com/spf13/cobra"
+
+	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
-	"github.com/harper/bbs/internal/sync"
-	"github.com/harperreed/sweet/vault"
-	"github.com/spf13/cobra"
 )
 
 var threadCmd = &cobra.Command{
@@ -62,12 +60,17 @@ func init() {
 }
 
 func runThreadList(cmd *cobra.Command, args []string) error {
-	topicID, err := db.ResolveTopicID(dbConn, args[0])
+	client, err := charm.Global()
 	if err != nil {
 		return err
 	}
 
-	threads, err := db.ListThreads(dbConn, topicID)
+	topic, err := client.ResolveTopic(args[0])
+	if err != nil {
+		return err
+	}
+
+	threads, err := client.ListThreads(topic.ID)
 	if err != nil {
 		return err
 	}
@@ -90,22 +93,21 @@ func runThreadList(cmd *cobra.Command, args []string) error {
 }
 
 func runThreadNew(cmd *cobra.Command, args []string) error {
-	topicID, err := db.ResolveTopicID(dbConn, args[0])
+	client, err := charm.Global()
 	if err != nil {
 		return err
 	}
 
-	topicUUID, _ := models.ParseUUID(topicID)
-	id := identity.GetIdentity(identityFlag, "cli")
-	thread := models.NewThread(topicUUID, args[1], id)
-
-	if err := db.CreateThread(dbConn, thread); err != nil {
-		return fmt.Errorf("failed to create thread: %w", err)
+	topic, err := client.ResolveTopic(args[0])
+	if err != nil {
+		return err
 	}
 
-	// Queue sync change (best-effort, won't fail if sync not configured)
-	if err := sync.TryQueueThreadChange(context.Background(), dbConn, thread, vault.OpUpsert); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
+	id := identity.GetIdentity(identityFlag, "cli")
+	thread := models.NewThread(topic.ID, args[1], id)
+
+	if err := client.CreateThread(thread); err != nil {
+		return fmt.Errorf("failed to create thread: %w", err)
 	}
 
 	color.Green("Created thread: %s", args[1])
@@ -114,7 +116,12 @@ func runThreadNew(cmd *cobra.Command, args []string) error {
 }
 
 func runThreadShow(cmd *cobra.Command, args []string) error {
-	thread, err := db.GetThreadByID(dbConn, args[0])
+	client, err := charm.Global()
+	if err != nil {
+		return err
+	}
+
+	thread, err := client.ResolveThread(args[0])
 	if err != nil {
 		return fmt.Errorf("thread not found: %s", args[0])
 	}
@@ -126,7 +133,7 @@ func runThreadShow(cmd *cobra.Command, args []string) error {
 	faint := color.New(color.Faint)
 	faint.Printf("by %s on %s\n\n", thread.CreatedBy, thread.CreatedAt.Format("2006-01-02 15:04"))
 
-	messages, err := db.ListMessages(dbConn, thread.ID.String())
+	messages, err := client.ListMessages(thread.ID)
 	if err != nil {
 		return err
 	}
@@ -150,18 +157,19 @@ func runThreadShow(cmd *cobra.Command, args []string) error {
 }
 
 func runThreadSticky(cmd *cobra.Command, args []string) error {
-	sticky := !unsticky
-	if err := db.SetThreadSticky(dbConn, args[0], sticky); err != nil {
+	client, err := charm.Global()
+	if err != nil {
 		return err
 	}
 
-	// Get updated thread for sync
-	thread, err := db.GetThreadByID(dbConn, args[0])
-	if err == nil {
-		// Queue sync change (best-effort, won't fail if sync not configured)
-		if err := sync.TryQueueThreadChange(context.Background(), dbConn, thread, vault.OpUpsert); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
-		}
+	thread, err := client.ResolveThread(args[0])
+	if err != nil {
+		return err
+	}
+
+	sticky := !unsticky
+	if err := client.SetThreadSticky(thread.ID, sticky); err != nil {
+		return err
 	}
 
 	if sticky {

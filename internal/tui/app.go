@@ -4,10 +4,9 @@
 package tui
 
 import (
-	"database/sql"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/harper/bbs/internal/charm"
 )
 
 // Pane represents which pane is focused
@@ -21,7 +20,7 @@ const (
 
 // Model is the main application state
 type Model struct {
-	db          *sql.DB
+	client      *charm.Client
 	identity    string
 	activePane  Pane
 	width       int
@@ -35,14 +34,14 @@ type Model struct {
 }
 
 // NewModel creates a new TUI model
-func NewModel(db *sql.DB, identity string) Model {
+func NewModel(client *charm.Client, identity string) Model {
 	return Model{
-		db:         db,
+		client:     client,
 		identity:   identity,
 		activePane: TopicsPane,
-		topics:     NewTopicsModel(db),
-		threads:    NewThreadsModel(db),
-		messages:   NewMessagesModel(db),
+		topics:     NewTopicsModel(client),
+		threads:    NewThreadsModel(client),
+		messages:   NewMessagesModel(client),
 	}
 }
 
@@ -125,12 +124,12 @@ func (m Model) updateNavigation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case TopicsPane:
 			if topic := m.topics.Selected(); topic != nil {
 				m.activePane = ThreadsPane
-				return m, m.threads.LoadThreads(topic.ID.String())
+				return m, m.threads.LoadThreads(topic.ID)
 			}
 		case ThreadsPane:
 			if thread := m.threads.Selected(); thread != nil {
 				m.activePane = MessagesPane
-				return m, m.messages.LoadMessages(thread.ID.String())
+				return m, m.messages.LoadMessages(thread.ID)
 			}
 		}
 		return m, nil
@@ -224,8 +223,8 @@ func (m Model) View() string {
 }
 
 // Run starts the TUI
-func Run(db *sql.DB, identity string) error {
-	p := tea.NewProgram(NewModel(db, identity), tea.WithAltScreen())
+func Run(client *charm.Client, identity string) error {
+	p := tea.NewProgram(NewModel(client, identity), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

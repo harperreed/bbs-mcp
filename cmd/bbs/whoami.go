@@ -6,7 +6,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/harper/bbs/internal/config"
+	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/spf13/cobra"
 )
@@ -25,14 +25,18 @@ func runWhoami(cmd *cobra.Command, args []string) error {
 	id := identity.GetIdentity(identityFlag, "cli")
 	fmt.Printf("Identity: %s\n", id)
 
-	cfg, _ := config.Load()
-	if cfg != nil && cfg.DeviceID != "" {
-		fmt.Printf("Device: %s\n", cfg.DeviceID[:8])
+	client, err := charm.Global()
+	if err != nil {
+		fmt.Println("Sync: not initialized")
+		return nil
 	}
-	if cfg != nil && cfg.IsConfigured() {
-		fmt.Printf("Sync: enabled (server: %s)\n", cfg.Server)
+
+	charmID, err := client.ID()
+	if err != nil {
+		fmt.Println("Sync: not linked")
 	} else {
-		fmt.Println("Sync: not configured")
+		fmt.Printf("Charm ID: %s\n", charmID[:8])
+		fmt.Printf("Sync: enabled (host: %s)\n", charm.DefaultCharmHost)
 	}
 
 	return nil

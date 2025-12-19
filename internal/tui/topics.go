@@ -4,12 +4,11 @@
 package tui
 
 import (
-	"database/sql"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/harper/bbs/internal/db"
+	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/models"
 )
 
@@ -18,19 +17,19 @@ type TopicsLoadedMsg struct {
 }
 
 type TopicsModel struct {
-	db       *sql.DB
+	client   *charm.Client
 	topics   []*models.Topic
 	cursor   int
 	selected int
 }
 
-func NewTopicsModel(database *sql.DB) TopicsModel {
-	return TopicsModel{db: database, cursor: 0, selected: -1}
+func NewTopicsModel(client *charm.Client) TopicsModel {
+	return TopicsModel{client: client, cursor: 0, selected: -1}
 }
 
 func (m *TopicsModel) LoadTopics() tea.Cmd {
 	return func() tea.Msg {
-		topics, err := db.ListTopics(m.db, false)
+		topics, err := m.client.ListTopics(false)
 		if err != nil {
 			return err
 		}

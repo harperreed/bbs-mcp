@@ -7,11 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
-	"github.com/harper/bbs/internal/db"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (s *Server) registerTools() {
@@ -84,7 +85,7 @@ func (s *Server) handleListTopics(ctx context.Context, req *mcp.CallToolRequest)
 		}, nil
 	}
 
-	topics, err := db.ListTopics(s.db, args.IncludeArchived)
+	topics, err := s.client.ListTopics(args.IncludeArchived)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -120,7 +121,7 @@ func (s *Server) handleCreateTopic(ctx context.Context, req *mcp.CallToolRequest
 	id := identity.GetIdentity(args.AgentName, "mcp")
 	topic := models.NewTopic(args.Name, args.Description, id)
 
-	if err := db.CreateTopic(s.db, topic); err != nil {
+	if err := s.client.CreateTopic(topic); err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,
@@ -144,7 +145,7 @@ func (s *Server) handleArchiveTopic(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	topicID, err := db.ResolveTopicID(s.db, args.Topic)
+	topic, err := s.client.ResolveTopic(args.Topic)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -152,7 +153,7 @@ func (s *Server) handleArchiveTopic(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	if err := db.ArchiveTopic(s.db, topicID, args.Archived); err != nil {
+	if err := s.client.ArchiveTopic(topic.ID, args.Archived); err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,
@@ -179,7 +180,7 @@ func (s *Server) handleListThreads(ctx context.Context, req *mcp.CallToolRequest
 		}, nil
 	}
 
-	topicID, err := db.ResolveTopicID(s.db, args.Topic)
+	topic, err := s.client.ResolveTopic(args.Topic)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -187,7 +188,7 @@ func (s *Server) handleListThreads(ctx context.Context, req *mcp.CallToolRequest
 		}, nil
 	}
 
-	threads, err := db.ListThreads(s.db, topicID)
+	threads, err := s.client.ListThreads(topic.ID)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -221,7 +222,7 @@ func (s *Server) handleCreateThread(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	topicID, err := db.ResolveTopicID(s.db, args.Topic)
+	topic, err := s.client.ResolveTopic(args.Topic)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -229,17 +230,10 @@ func (s *Server) handleCreateThread(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	topicUUID, err := models.ParseUUID(topicID)
-	if err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid topic ID: %v", err)}},
-			IsError: true,
-		}, nil
-	}
 	id := identity.GetIdentity(args.AgentName, "mcp")
-	thread := models.NewThread(topicUUID, args.Subject, id)
+	thread := models.NewThread(topic.ID, args.Subject, id)
 
-	if err := db.CreateThread(s.db, thread); err != nil {
+	if err := s.client.CreateThread(thread); err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,
@@ -249,7 +243,7 @@ func (s *Server) handleCreateThread(ctx context.Context, req *mcp.CallToolReques
 	// Post initial message if provided
 	if args.Message != "" {
 		msg := models.NewMessage(thread.ID, args.Message, id)
-		if err := db.CreateMessage(s.db, msg); err != nil {
+		if err := s.client.CreateMessage(msg); err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("thread created but failed to post message: %v", err)}},
 				IsError: true,
@@ -274,7 +268,15 @@ func (s *Server) handleStickyThread(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	if err := db.SetThreadSticky(s.db, args.Thread, args.Sticky); err != nil {
+	thread, err := s.client.ResolveThread(args.Thread)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+			IsError: true,
+		}, nil
+	}
+
+	if err := s.client.SetThreadSticky(thread.ID, args.Sticky); err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,
@@ -301,7 +303,15 @@ func (s *Server) handleListMessages(ctx context.Context, req *mcp.CallToolReques
 		}, nil
 	}
 
-	messages, err := db.ListMessages(s.db, args.Thread)
+	thread, err := s.client.ResolveThread(args.Thread)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+			IsError: true,
+		}, nil
+	}
+
+	messages, err := s.client.ListMessages(thread.ID)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -334,7 +344,7 @@ func (s *Server) handlePostMessage(ctx context.Context, req *mcp.CallToolRequest
 		}, nil
 	}
 
-	thread, err := db.GetThreadByID(s.db, args.Thread)
+	thread, err := s.client.ResolveThread(args.Thread)
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -345,7 +355,7 @@ func (s *Server) handlePostMessage(ctx context.Context, req *mcp.CallToolRequest
 	id := identity.GetIdentity(args.AgentName, "mcp")
 	msg := models.NewMessage(thread.ID, args.Content, id)
 
-	if err := db.CreateMessage(s.db, msg); err != nil {
+	if err := s.client.CreateMessage(msg); err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,
@@ -369,7 +379,19 @@ func (s *Server) handleEditMessage(ctx context.Context, req *mcp.CallToolRequest
 		}, nil
 	}
 
-	if err := db.UpdateMessage(s.db, args.MessageID, args.Content); err != nil {
+	msg, err := s.client.ResolveMessage(args.MessageID)
+	if err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+			IsError: true,
+		}, nil
+	}
+
+	msg.Content = args.Content
+	now := time.Now()
+	msg.EditedAt = &now
+
+	if err := s.client.UpdateMessage(msg); err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,

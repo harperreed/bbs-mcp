@@ -1,5 +1,5 @@
-// ABOUTME: Sync configuration management
-// ABOUTME: Handles server, auth, and encryption settings
+// ABOUTME: BBS configuration management
+// ABOUTME: Handles Charm server settings and preferences
 
 package config
 
@@ -9,16 +9,13 @@ import (
 	"path/filepath"
 )
 
-// Config stores sync configuration
+// DefaultCharmHost is the default Charm server
+const DefaultCharmHost = "charm.2389.dev"
+
+// Config stores BBS configuration
 type Config struct {
-	Server       string `json:"server"`
-	UserID       string `json:"user_id"`
-	Token        string `json:"token"`
-	RefreshToken string `json:"refresh_token"`
-	TokenExpires string `json:"token_expires"`
-	DerivedKey   string `json:"derived_key"`
-	DeviceID     string `json:"device_id"`
-	VaultDB      string `json:"vault_db"`
+	// CharmHost is the Charm server URL (default: charm.2389.dev)
+	CharmHost string `json:"charm_host,omitempty"`
 }
 
 // GetConfigPath returns the config file path
@@ -28,17 +25,7 @@ func GetConfigPath() string {
 		homeDir, _ := os.UserHomeDir()
 		configDir = filepath.Join(homeDir, ".config")
 	}
-	return filepath.Join(configDir, "bbs", "sync.json")
-}
-
-// GetVaultDBPath returns the vault database path
-func GetVaultDBPath() string {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		homeDir, _ := os.UserHomeDir()
-		configDir = filepath.Join(homeDir, ".config")
-	}
-	return filepath.Join(configDir, "bbs", "vault.db")
+	return filepath.Join(configDir, "bbs", "config.json")
 }
 
 // Load reads config from disk
@@ -74,7 +61,25 @@ func (c *Config) Save() error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// IsConfigured returns true if sync is configured
-func (c *Config) IsConfigured() bool {
-	return c.Server != "" && c.Token != "" && c.DerivedKey != ""
+// GetCharmHost returns the Charm host, preferring environment variable.
+func (c *Config) GetCharmHost() string {
+	// Environment variable takes precedence
+	if host := os.Getenv("CHARM_HOST"); host != "" {
+		return host
+	}
+	// Then config file
+	if c.CharmHost != "" {
+		return c.CharmHost
+	}
+	// Then default
+	return DefaultCharmHost
+}
+
+// ApplyEnvironment sets environment variables from config.
+// Call this before initializing Charm client.
+func (c *Config) ApplyEnvironment() {
+	if os.Getenv("CHARM_HOST") == "" {
+		host := c.GetCharmHost()
+		os.Setenv("CHARM_HOST", host)
+	}
 }

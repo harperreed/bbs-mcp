@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/harper/bbs/internal/db"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -45,7 +44,7 @@ func (s *Server) registerResources() {
 }
 
 func (s *Server) handleTopicsResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-	topics, err := db.ListTopics(s.db, false)
+	topics, err := s.client.ListTopics(false)
 	if err != nil {
 		return nil, err
 	}
@@ -61,13 +60,13 @@ func (s *Server) handleTopicsResource(ctx context.Context, req *mcp.ReadResource
 }
 
 func (s *Server) handleRecentResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-	topics, _ := db.ListTopics(s.db, false)
+	topics, _ := s.client.ListTopics(false)
 
 	var sb strings.Builder
 	sb.WriteString("# Recent Activity\n\n")
 
 	for _, topic := range topics {
-		threads, _ := db.ListThreads(s.db, topic.ID.String())
+		threads, _ := s.client.ListThreads(topic.ID)
 		if len(threads) == 0 {
 			continue
 		}
@@ -103,12 +102,12 @@ func (s *Server) handleTopicThreadsResource(ctx context.Context, req *mcp.ReadRe
 	}
 	topicName := parts[3]
 
-	topicID, err := db.ResolveTopicID(s.db, topicName)
+	topic, err := s.client.ResolveTopic(topicName)
 	if err != nil {
 		return nil, err
 	}
 
-	threads, err := db.ListThreads(s.db, topicID)
+	threads, err := s.client.ListThreads(topic.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,12 +130,12 @@ func (s *Server) handleThreadMessagesResource(ctx context.Context, req *mcp.Read
 	}
 	threadID := parts[3]
 
-	thread, err := db.GetThreadByID(s.db, threadID)
+	thread, err := s.client.ResolveThread(threadID)
 	if err != nil {
 		return nil, err
 	}
 
-	messages, err := db.ListMessages(s.db, thread.ID.String())
+	messages, err := s.client.ListMessages(thread.ID)
 	if err != nil {
 		return nil, err
 	}

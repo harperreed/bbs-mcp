@@ -10,8 +10,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/harper/bbs/internal/mcp"
 	"github.com/spf13/cobra"
+
+	"github.com/harper/bbs/internal/charm"
+	"github.com/harper/bbs/internal/mcp"
 )
 
 var mcpCmd = &cobra.Command{
@@ -32,11 +34,12 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if dbConn == nil {
-		return fmt.Errorf("database connection not initialized")
+	client, err := charm.Global()
+	if err != nil {
+		return fmt.Errorf("charm client not initialized: %w", err)
 	}
 
-	server, err := mcp.NewServer(dbConn)
+	server, err := mcp.NewServer(client)
 	if err != nil {
 		return err
 	}

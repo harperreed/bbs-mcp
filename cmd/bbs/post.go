@@ -4,17 +4,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"os"
+	"time"
 
 	"github.com/fatih/color"
-	"github.com/harper/bbs/internal/db"
+	"github.com/spf13/cobra"
+
+	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
-	"github.com/harper/bbs/internal/sync"
-	"github.com/harperreed/sweet/vault"
-	"github.com/spf13/cobra"
 )
 
 var postCmd = &cobra.Command{
@@ -37,7 +35,12 @@ func init() {
 }
 
 func runPost(cmd *cobra.Command, args []string) error {
-	thread, err := db.GetThreadByID(dbConn, args[0])
+	client, err := charm.Global()
+	if err != nil {
+		return err
+	}
+
+	thread, err := client.ResolveThread(args[0])
 	if err != nil {
 		return fmt.Errorf("thread not found: %s", args[0])
 	}
@@ -45,13 +48,8 @@ func runPost(cmd *cobra.Command, args []string) error {
 	id := identity.GetIdentity(identityFlag, "cli")
 	msg := models.NewMessage(thread.ID, args[1], id)
 
-	if err := db.CreateMessage(dbConn, msg); err != nil {
+	if err := client.CreateMessage(msg); err != nil {
 		return fmt.Errorf("failed to post message: %w", err)
-	}
-
-	// Queue sync change (best-effort, won't fail if sync not configured)
-	if err := sync.TryQueueMessageChange(context.Background(), dbConn, msg, vault.OpUpsert); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
 	}
 
 	color.Green("Posted to: %s", thread.Subject)
@@ -60,17 +58,22 @@ func runPost(cmd *cobra.Command, args []string) error {
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
-	if err := db.UpdateMessage(dbConn, args[0], args[1]); err != nil {
+	client, err := charm.Global()
+	if err != nil {
 		return err
 	}
 
-	// Get updated message for sync
-	msg, err := db.GetMessageByID(dbConn, args[0])
-	if err == nil {
-		// Queue sync change (best-effort, won't fail if sync not configured)
-		if err := sync.TryQueueMessageChange(context.Background(), dbConn, msg, vault.OpUpsert); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to queue sync: %v\n", err)
-		}
+	msg, err := client.ResolveMessage(args[0])
+	if err != nil {
+		return fmt.Errorf("message not found: %s", args[0])
+	}
+
+	msg.Content = args[1]
+	now := time.Now()
+	msg.EditedAt = &now
+
+	if err := client.UpdateMessage(msg); err != nil {
+		return err
 	}
 
 	color.Green("Message updated")

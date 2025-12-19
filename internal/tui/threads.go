@@ -4,12 +4,12 @@
 package tui
 
 import (
-	"database/sql"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/harper/bbs/internal/db"
+	"github.com/google/uuid"
+	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/models"
 )
 
@@ -18,20 +18,20 @@ type ThreadsLoadedMsg struct {
 }
 
 type ThreadsModel struct {
-	db      *sql.DB
+	client  *charm.Client
 	threads []*models.Thread
 	cursor  int
-	topicID string
+	topicID uuid.UUID
 }
 
-func NewThreadsModel(database *sql.DB) ThreadsModel {
-	return ThreadsModel{db: database, cursor: 0}
+func NewThreadsModel(client *charm.Client) ThreadsModel {
+	return ThreadsModel{client: client, cursor: 0}
 }
 
-func (m *ThreadsModel) LoadThreads(topicID string) tea.Cmd {
+func (m *ThreadsModel) LoadThreads(topicID uuid.UUID) tea.Cmd {
 	m.topicID = topicID
 	return func() tea.Msg {
-		threads, err := db.ListThreads(m.db, topicID)
+		threads, err := m.client.ListThreads(topicID)
 		if err != nil {
 			return err
 		}
