@@ -4,6 +4,7 @@
 package charm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/charmbracelet/charm/client"
 	"github.com/charmbracelet/charm/kv"
-	badger "github.com/dgraph-io/badger/v3"
 	"github.com/google/uuid"
 
 	"github.com/harper/bbs/internal/models"
@@ -163,7 +163,7 @@ func (c *Client) CreateTopic(t *models.Topic) error {
 func (c *Client) GetTopic(id uuid.UUID) (*models.Topic, error) {
 	data, err := c.kv.Get(topicKey(id))
 	if err != nil {
-		if errors.Is(err, badger.ErrKeyNotFound) {
+		if errors.Is(err, kv.ErrMissingKey) {
 			return nil, fmt.Errorf("topic not found: %s", id)
 		}
 		return nil, err
@@ -200,30 +200,37 @@ func (c *Client) ListTopics(includeArchived bool) ([]*models.Topic, error) {
 	var topics []*models.Topic
 	prefix := []byte(TopicPrefix)
 
-	err := c.kv.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	// Get all keys from the database
+	keys, err := c.kv.Keys()
+	if err != nil {
+		return nil, err
+	}
 
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var topic models.Topic
-				if err := json.Unmarshal(val, &topic); err != nil {
-					return err
-				}
-				if includeArchived || !topic.Archived {
-					topics = append(topics, &topic)
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+	// Filter keys by prefix and unmarshal values
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			continue
 		}
-		return nil
-	})
-	return topics, err
+
+		data, err := c.kv.Get(key)
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				continue // Key was deleted between Keys() and Get()
+			}
+			return nil, err
+		}
+
+		var topic models.Topic
+		if err := json.Unmarshal(data, &topic); err != nil {
+			return nil, err
+		}
+
+		if includeArchived || !topic.Archived {
+			topics = append(topics, &topic)
+		}
+	}
+
+	return topics, nil
 }
 
 // GetTopicByName finds a topic by its name.
@@ -258,7 +265,7 @@ func (c *Client) CreateThread(t *models.Thread) error {
 func (c *Client) GetThread(id uuid.UUID) (*models.Thread, error) {
 	data, err := c.kv.Get(threadKey(id))
 	if err != nil {
-		if errors.Is(err, badger.ErrKeyNotFound) {
+		if errors.Is(err, kv.ErrMissingKey) {
 			return nil, fmt.Errorf("thread not found: %s", id)
 		}
 		return nil, err
@@ -295,30 +302,37 @@ func (c *Client) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
 	var threads []*models.Thread
 	prefix := []byte(ThreadPrefix)
 
-	err := c.kv.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	// Get all keys from the database
+	keys, err := c.kv.Keys()
+	if err != nil {
+		return nil, err
+	}
 
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var thread models.Thread
-				if err := json.Unmarshal(val, &thread); err != nil {
-					return err
-				}
-				if thread.TopicID == topicID {
-					threads = append(threads, &thread)
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+	// Filter keys by prefix and unmarshal values
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			continue
 		}
-		return nil
-	})
-	return threads, err
+
+		data, err := c.kv.Get(key)
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				continue // Key was deleted between Keys() and Get()
+			}
+			return nil, err
+		}
+
+		var thread models.Thread
+		if err := json.Unmarshal(data, &thread); err != nil {
+			return nil, err
+		}
+
+		if thread.TopicID == topicID {
+			threads = append(threads, &thread)
+		}
+	}
+
+	return threads, nil
 }
 
 // Message CRUD
@@ -339,7 +353,7 @@ func (c *Client) CreateMessage(m *models.Message) error {
 func (c *Client) GetMessage(id uuid.UUID) (*models.Message, error) {
 	data, err := c.kv.Get(messageKey(id))
 	if err != nil {
-		if errors.Is(err, badger.ErrKeyNotFound) {
+		if errors.Is(err, kv.ErrMissingKey) {
 			return nil, fmt.Errorf("message not found: %s", id)
 		}
 		return nil, err
@@ -376,30 +390,37 @@ func (c *Client) ListMessages(threadID uuid.UUID) ([]*models.Message, error) {
 	var messages []*models.Message
 	prefix := []byte(MessagePrefix)
 
-	err := c.kv.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	// Get all keys from the database
+	keys, err := c.kv.Keys()
+	if err != nil {
+		return nil, err
+	}
 
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var msg models.Message
-				if err := json.Unmarshal(val, &msg); err != nil {
-					return err
-				}
-				if msg.ThreadID == threadID {
-					messages = append(messages, &msg)
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+	// Filter keys by prefix and unmarshal values
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			continue
 		}
-		return nil
-	})
-	return messages, err
+
+		data, err := c.kv.Get(key)
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				continue // Key was deleted between Keys() and Get()
+			}
+			return nil, err
+		}
+
+		var msg models.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return nil, err
+		}
+
+		if msg.ThreadID == threadID {
+			messages = append(messages, &msg)
+		}
+	}
+
+	return messages, nil
 }
 
 // Attachment CRUD
@@ -417,7 +438,7 @@ func (c *Client) CreateAttachment(a *models.Attachment) error {
 func (c *Client) GetAttachment(id uuid.UUID) (*models.Attachment, error) {
 	data, err := c.kv.Get(attachmentKey(id))
 	if err != nil {
-		if errors.Is(err, badger.ErrKeyNotFound) {
+		if errors.Is(err, kv.ErrMissingKey) {
 			return nil, fmt.Errorf("attachment not found: %s", id)
 		}
 		return nil, err
@@ -439,28 +460,35 @@ func (c *Client) ListAttachments(messageID uuid.UUID) ([]*models.Attachment, err
 	var attachments []*models.Attachment
 	prefix := []byte(AttachmentPrefix)
 
-	err := c.kv.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	// Get all keys from the database
+	keys, err := c.kv.Keys()
+	if err != nil {
+		return nil, err
+	}
 
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var att models.Attachment
-				if err := json.Unmarshal(val, &att); err != nil {
-					return err
-				}
-				if att.MessageID == messageID {
-					attachments = append(attachments, &att)
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+	// Filter keys by prefix and unmarshal values
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			continue
 		}
-		return nil
-	})
-	return attachments, err
+
+		data, err := c.kv.Get(key)
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				continue // Key was deleted between Keys() and Get()
+			}
+			return nil, err
+		}
+
+		var att models.Attachment
+		if err := json.Unmarshal(data, &att); err != nil {
+			return nil, err
+		}
+
+		if att.MessageID == messageID {
+			attachments = append(attachments, &att)
+		}
+	}
+
+	return attachments, nil
 }
