@@ -68,7 +68,7 @@ func TestWALConcurrentConnections(t *testing.T) {
 					errors <- err
 				}
 			}
-		}(i)
+		}()
 	}
 
 	wg.Wait()
