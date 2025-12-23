@@ -11,8 +11,11 @@ import (
 )
 
 func TestNewClient(t *testing.T) {
-	// NewClient accepts nil KV for testing purposes
-	client := NewClient(nil)
+	// NewClient with no options should succeed
+	client, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient should not error: %v", err)
+	}
 	if client == nil {
 		t.Error("NewClient should return non-nil client")
 	}

@@ -36,7 +36,12 @@ func runWhoami(cmd *cobra.Command, args []string) error {
 		fmt.Println("Sync: not linked")
 	} else {
 		fmt.Printf("Charm ID: %s\n", charmID[:8])
-		fmt.Printf("Sync: enabled (host: %s)\n", charm.DefaultCharmHost)
+		cfg := client.Config()
+		host := cfg.CharmHost
+		if host == "" {
+			host = "charm.2389.dev"
+		}
+		fmt.Printf("Sync: enabled (host: %s)\n", host)
 	}
 
 	return nil

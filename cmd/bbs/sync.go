@@ -132,7 +132,10 @@ func runSyncStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// Get authorized keys
-	cc := client.CharmClient()
+	cc, err := client.CharmClient()
+	if err != nil {
+		return err
+	}
 	keys, err := cc.AuthorizedKeys()
 	if err == nil && keys != "" {
 		lines := strings.Split(strings.TrimSpace(keys), "\n")

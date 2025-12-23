@@ -1,5 +1,5 @@
-// ABOUTME: Charm KV client wrapper for cloud-synced storage
-// ABOUTME: Provides automatic sync via SSH keys using Charm Cloud
+// ABOUTME: Charm KV client wrapper using transactional Do API
+// ABOUTME: Short-lived connections to avoid lock contention with other MCP servers
 
 package charm
 
@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/charmbracelet/charm/client"
 	"github.com/charmbracelet/charm/kv"
@@ -26,72 +25,100 @@ const (
 	AttachmentPrefix = "attachment:"
 )
 
-// DefaultCharmHost is the default Charm server
-const DefaultCharmHost = "charm.2389.dev"
-
 // DBName is the name of the BBS key-value store
 const DBName = "bbs"
 
-var (
-	globalKV   *kv.KV
-	globalOnce sync.Once
-	initErr    error
-)
-
-// Client wraps charm/kv.KV with BBS-specific operations
+// Client holds configuration for KV operations.
+// Unlike the previous implementation, it does NOT hold a persistent connection.
+// Each operation opens the database, performs the operation, and closes it.
 type Client struct {
-	kv *kv.KV
+	dbName   string
+	autoSync bool
 }
 
-// InitGlobal initializes the global Charm KV client.
-// This is thread-safe and will only initialize once.
-// Automatically falls back to read-only mode if another process holds the lock.
-func InitGlobal() error {
-	globalOnce.Do(func() {
-		// Set CHARM_HOST if not already set
-		if os.Getenv("CHARM_HOST") == "" {
-			os.Setenv("CHARM_HOST", DefaultCharmHost)
-		}
+// Option configures a Client.
+type Option func(*Client)
 
-		globalKV, initErr = kv.OpenWithDefaultsFallback(DBName)
-		if initErr != nil {
-			return
-		}
-
-		// Sync on startup to pull remote changes (skip in read-only mode)
-		if !globalKV.IsReadOnly() {
-			initErr = globalKV.Sync()
-		}
-	})
-	return initErr
-}
-
-// Global returns the global Charm client.
-// Must call InitGlobal first.
-func Global() (*Client, error) {
-	if globalKV == nil {
-		return nil, fmt.Errorf("charm not initialized - call InitGlobal first")
+// WithDBName sets the database name.
+func WithDBName(name string) Option {
+	return func(c *Client) {
+		c.dbName = name
 	}
-	return &Client{kv: globalKV}, nil
 }
 
-// NewClient creates a new Charm client with the given KV store.
-func NewClient(db *kv.KV) *Client {
-	return &Client{kv: db}
+// WithAutoSync enables or disables auto-sync after writes.
+func WithAutoSync(enabled bool) Option {
+	return func(c *Client) {
+		c.autoSync = enabled
+	}
 }
 
-// Close closes the underlying KV store.
-func (c *Client) Close() error {
-	if c.kv != nil {
-		return c.kv.Close()
+// NewClient creates a new client with the given options.
+func NewClient(opts ...Option) (*Client, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	// Set charm host if configured
+	if cfg.CharmHost != "" {
+		if err := os.Setenv("CHARM_HOST", cfg.CharmHost); err != nil {
+			return nil, err
+		}
+	}
+
+	c := &Client{
+		dbName:   DBName,
+		autoSync: cfg.AutoSync,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
+}
+
+// DoReadOnly executes a function with read-only database access.
+// Use this for batch read operations that need multiple Gets.
+func (c *Client) DoReadOnly(fn func(k *kv.KV) error) error {
+	return kv.DoReadOnly(c.dbName, fn)
+}
+
+// Do executes a function with write access to the database.
+// Use this for batch write operations.
+func (c *Client) Do(fn func(k *kv.KV) error) error {
+	return kv.Do(c.dbName, func(k *kv.KV) error {
+		if err := fn(k); err != nil {
+			return err
+		}
+		if c.autoSync {
+			return k.Sync()
+		}
+		return nil
+	})
+}
+
+// --- Legacy compatibility layer ---
+// These functions maintain backwards compatibility with existing code.
+
+// InitGlobal is a no-op for backwards compatibility.
+// With Do API, connections are automatically managed.
+func InitGlobal() error {
+	// Set CHARM_HOST if not already set
+	if os.Getenv("CHARM_HOST") == "" {
+		os.Setenv("CHARM_HOST", "charm.2389.dev")
 	}
 	return nil
 }
 
-// ID returns the current user's Charm ID.
-func (c *Client) ID() (string, error) {
-	cc := c.kv.Client()
-	return cc.ID()
+// Global returns a new client instance.
+func Global() (*Client, error) {
+	return NewClient()
+}
+
+// Close is a no-op for backwards compatibility.
+// With Do API, connections are automatically closed after each operation.
+func (c *Client) Close() error {
+	return nil
 }
 
 // IsLinked returns true if the user has linked their account.
@@ -100,30 +127,38 @@ func (c *Client) IsLinked() bool {
 	return err == nil
 }
 
-// IsReadOnly returns true if the database is open in read-only mode.
-// This happens when another process (like an MCP server) holds the lock.
-func (c *Client) IsReadOnly() bool {
-	return c.kv.IsReadOnly()
+// ID returns the current user's Charm ID.
+func (c *Client) ID() (string, error) {
+	cc, err := client.NewClientWithDefaults()
+	if err != nil {
+		return "", err
+	}
+	return cc.ID()
 }
 
-// Sync pulls remote changes from Charm Cloud.
+// CharmClient returns a new charm client for auth operations.
+func (c *Client) CharmClient() (*client.Client, error) {
+	return client.NewClientWithDefaults()
+}
+
+// Sync triggers a manual sync with the charm server.
 func (c *Client) Sync() error {
-	return c.kv.Sync()
+	return kv.Do(c.dbName, func(k *kv.KV) error {
+		return k.Sync()
+	})
 }
 
-// Reset wipes local data and re-syncs from Charm Cloud.
+// Reset clears all data (nuclear option).
 func (c *Client) Reset() error {
-	return c.kv.Reset()
+	return kv.Do(c.dbName, func(k *kv.KV) error {
+		return k.Reset()
+	})
 }
 
-// KV returns the underlying kv.KV instance for direct access.
-func (c *Client) KV() *kv.KV {
-	return c.kv
-}
-
-// CharmClient returns the underlying charm client for auth operations.
-func (c *Client) CharmClient() *client.Client {
-	return c.kv.Client()
+// Config returns the current configuration.
+func (c *Client) Config() *Config {
+	cfg, _ := LoadConfig()
+	return cfg
 }
 
 // key helpers
@@ -152,25 +187,26 @@ func (c *Client) CreateTopic(t *models.Topic) error {
 	if err != nil {
 		return fmt.Errorf("marshal topic: %w", err)
 	}
-	if err := c.kv.Set(topicKey(t.ID), data); err != nil {
-		return err
-	}
-	// Push changes to cloud
-	return c.kv.Sync()
+	return c.Do(func(k *kv.KV) error {
+		return k.Set(topicKey(t.ID), data)
+	})
 }
 
 // GetTopic retrieves a topic by ID.
 func (c *Client) GetTopic(id uuid.UUID) (*models.Topic, error) {
-	data, err := c.kv.Get(topicKey(id))
-	if err != nil {
-		if errors.Is(err, kv.ErrMissingKey) {
-			return nil, fmt.Errorf("topic not found: %s", id)
-		}
-		return nil, err
-	}
 	var topic models.Topic
-	if err := json.Unmarshal(data, &topic); err != nil {
-		return nil, fmt.Errorf("unmarshal topic: %w", err)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		data, err := k.Get(topicKey(id))
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				return fmt.Errorf("topic not found: %s", id)
+			}
+			return err
+		}
+		return json.Unmarshal(data, &topic)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &topic, nil
 }
@@ -192,7 +228,9 @@ func (c *Client) DeleteTopic(id uuid.UUID) error {
 			return fmt.Errorf("cascade delete thread %s: %w", thread.ID, err)
 		}
 	}
-	return c.kv.Delete(topicKey(id))
+	return c.Do(func(k *kv.KV) error {
+		return k.Delete(topicKey(id))
+	})
 }
 
 // ListTopics returns all topics, optionally including archived ones.
@@ -200,37 +238,40 @@ func (c *Client) ListTopics(includeArchived bool) ([]*models.Topic, error) {
 	var topics []*models.Topic
 	prefix := []byte(TopicPrefix)
 
-	// Get all keys from the database
-	keys, err := c.kv.Keys()
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter keys by prefix and unmarshal values
-	for _, key := range keys {
-		if !bytes.HasPrefix(key, prefix) {
-			continue
-		}
-
-		data, err := c.kv.Get(key)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		// Get all keys from the database
+		keys, err := k.Keys()
 		if err != nil {
-			if errors.Is(err, kv.ErrMissingKey) {
-				continue // Key was deleted between Keys() and Get()
+			return err
+		}
+
+		// Filter keys by prefix and unmarshal values
+		for _, key := range keys {
+			if !bytes.HasPrefix(key, prefix) {
+				continue
 			}
-			return nil, err
-		}
 
-		var topic models.Topic
-		if err := json.Unmarshal(data, &topic); err != nil {
-			return nil, err
-		}
+			data, err := k.Get(key)
+			if err != nil {
+				if errors.Is(err, kv.ErrMissingKey) {
+					continue // Key was deleted between Keys() and Get()
+				}
+				return err
+			}
 
-		if includeArchived || !topic.Archived {
-			topics = append(topics, &topic)
-		}
-	}
+			var topic models.Topic
+			if err := json.Unmarshal(data, &topic); err != nil {
+				return err
+			}
 
-	return topics, nil
+			if includeArchived || !topic.Archived {
+				topics = append(topics, &topic)
+			}
+		}
+		return nil
+	})
+
+	return topics, err
 }
 
 // GetTopicByName finds a topic by its name.
@@ -255,24 +296,26 @@ func (c *Client) CreateThread(t *models.Thread) error {
 	if err != nil {
 		return fmt.Errorf("marshal thread: %w", err)
 	}
-	if err := c.kv.Set(threadKey(t.ID), data); err != nil {
-		return err
-	}
-	return c.kv.Sync()
+	return c.Do(func(k *kv.KV) error {
+		return k.Set(threadKey(t.ID), data)
+	})
 }
 
 // GetThread retrieves a thread by ID.
 func (c *Client) GetThread(id uuid.UUID) (*models.Thread, error) {
-	data, err := c.kv.Get(threadKey(id))
-	if err != nil {
-		if errors.Is(err, kv.ErrMissingKey) {
-			return nil, fmt.Errorf("thread not found: %s", id)
-		}
-		return nil, err
-	}
 	var thread models.Thread
-	if err := json.Unmarshal(data, &thread); err != nil {
-		return nil, fmt.Errorf("unmarshal thread: %w", err)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		data, err := k.Get(threadKey(id))
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				return fmt.Errorf("thread not found: %s", id)
+			}
+			return err
+		}
+		return json.Unmarshal(data, &thread)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &thread, nil
 }
@@ -294,7 +337,9 @@ func (c *Client) DeleteThread(id uuid.UUID) error {
 			return fmt.Errorf("cascade delete message %s: %w", msg.ID, err)
 		}
 	}
-	return c.kv.Delete(threadKey(id))
+	return c.Do(func(k *kv.KV) error {
+		return k.Delete(threadKey(id))
+	})
 }
 
 // ListThreads returns all threads for a topic.
@@ -302,37 +347,40 @@ func (c *Client) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
 	var threads []*models.Thread
 	prefix := []byte(ThreadPrefix)
 
-	// Get all keys from the database
-	keys, err := c.kv.Keys()
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter keys by prefix and unmarshal values
-	for _, key := range keys {
-		if !bytes.HasPrefix(key, prefix) {
-			continue
-		}
-
-		data, err := c.kv.Get(key)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		// Get all keys from the database
+		keys, err := k.Keys()
 		if err != nil {
-			if errors.Is(err, kv.ErrMissingKey) {
-				continue // Key was deleted between Keys() and Get()
+			return err
+		}
+
+		// Filter keys by prefix and unmarshal values
+		for _, key := range keys {
+			if !bytes.HasPrefix(key, prefix) {
+				continue
 			}
-			return nil, err
-		}
 
-		var thread models.Thread
-		if err := json.Unmarshal(data, &thread); err != nil {
-			return nil, err
-		}
+			data, err := k.Get(key)
+			if err != nil {
+				if errors.Is(err, kv.ErrMissingKey) {
+					continue // Key was deleted between Keys() and Get()
+				}
+				return err
+			}
 
-		if thread.TopicID == topicID {
-			threads = append(threads, &thread)
-		}
-	}
+			var thread models.Thread
+			if err := json.Unmarshal(data, &thread); err != nil {
+				return err
+			}
 
-	return threads, nil
+			if thread.TopicID == topicID {
+				threads = append(threads, &thread)
+			}
+		}
+		return nil
+	})
+
+	return threads, err
 }
 
 // Message CRUD
@@ -343,24 +391,26 @@ func (c *Client) CreateMessage(m *models.Message) error {
 	if err != nil {
 		return fmt.Errorf("marshal message: %w", err)
 	}
-	if err := c.kv.Set(messageKey(m.ID), data); err != nil {
-		return err
-	}
-	return c.kv.Sync()
+	return c.Do(func(k *kv.KV) error {
+		return k.Set(messageKey(m.ID), data)
+	})
 }
 
 // GetMessage retrieves a message by ID.
 func (c *Client) GetMessage(id uuid.UUID) (*models.Message, error) {
-	data, err := c.kv.Get(messageKey(id))
-	if err != nil {
-		if errors.Is(err, kv.ErrMissingKey) {
-			return nil, fmt.Errorf("message not found: %s", id)
-		}
-		return nil, err
-	}
 	var msg models.Message
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return nil, fmt.Errorf("unmarshal message: %w", err)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		data, err := k.Get(messageKey(id))
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				return fmt.Errorf("message not found: %s", id)
+			}
+			return err
+		}
+		return json.Unmarshal(data, &msg)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &msg, nil
 }
@@ -382,7 +432,9 @@ func (c *Client) DeleteMessage(id uuid.UUID) error {
 			return fmt.Errorf("cascade delete attachment %s: %w", att.ID, err)
 		}
 	}
-	return c.kv.Delete(messageKey(id))
+	return c.Do(func(k *kv.KV) error {
+		return k.Delete(messageKey(id))
+	})
 }
 
 // ListMessages returns all messages for a thread.
@@ -390,37 +442,40 @@ func (c *Client) ListMessages(threadID uuid.UUID) ([]*models.Message, error) {
 	var messages []*models.Message
 	prefix := []byte(MessagePrefix)
 
-	// Get all keys from the database
-	keys, err := c.kv.Keys()
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter keys by prefix and unmarshal values
-	for _, key := range keys {
-		if !bytes.HasPrefix(key, prefix) {
-			continue
-		}
-
-		data, err := c.kv.Get(key)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		// Get all keys from the database
+		keys, err := k.Keys()
 		if err != nil {
-			if errors.Is(err, kv.ErrMissingKey) {
-				continue // Key was deleted between Keys() and Get()
+			return err
+		}
+
+		// Filter keys by prefix and unmarshal values
+		for _, key := range keys {
+			if !bytes.HasPrefix(key, prefix) {
+				continue
 			}
-			return nil, err
-		}
 
-		var msg models.Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return nil, err
-		}
+			data, err := k.Get(key)
+			if err != nil {
+				if errors.Is(err, kv.ErrMissingKey) {
+					continue // Key was deleted between Keys() and Get()
+				}
+				return err
+			}
 
-		if msg.ThreadID == threadID {
-			messages = append(messages, &msg)
-		}
-	}
+			var msg models.Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				return err
+			}
 
-	return messages, nil
+			if msg.ThreadID == threadID {
+				messages = append(messages, &msg)
+			}
+		}
+		return nil
+	})
+
+	return messages, err
 }
 
 // Attachment CRUD
@@ -431,28 +486,35 @@ func (c *Client) CreateAttachment(a *models.Attachment) error {
 	if err != nil {
 		return fmt.Errorf("marshal attachment: %w", err)
 	}
-	return c.kv.Set(attachmentKey(a.ID), data)
+	return c.Do(func(k *kv.KV) error {
+		return k.Set(attachmentKey(a.ID), data)
+	})
 }
 
 // GetAttachment retrieves an attachment by ID.
 func (c *Client) GetAttachment(id uuid.UUID) (*models.Attachment, error) {
-	data, err := c.kv.Get(attachmentKey(id))
-	if err != nil {
-		if errors.Is(err, kv.ErrMissingKey) {
-			return nil, fmt.Errorf("attachment not found: %s", id)
-		}
-		return nil, err
-	}
 	var att models.Attachment
-	if err := json.Unmarshal(data, &att); err != nil {
-		return nil, fmt.Errorf("unmarshal attachment: %w", err)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		data, err := k.Get(attachmentKey(id))
+		if err != nil {
+			if errors.Is(err, kv.ErrMissingKey) {
+				return fmt.Errorf("attachment not found: %s", id)
+			}
+			return err
+		}
+		return json.Unmarshal(data, &att)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &att, nil
 }
 
 // DeleteAttachment deletes an attachment.
 func (c *Client) DeleteAttachment(id uuid.UUID) error {
-	return c.kv.Delete(attachmentKey(id))
+	return c.Do(func(k *kv.KV) error {
+		return k.Delete(attachmentKey(id))
+	})
 }
 
 // ListAttachments returns all attachments for a message.
@@ -460,35 +522,38 @@ func (c *Client) ListAttachments(messageID uuid.UUID) ([]*models.Attachment, err
 	var attachments []*models.Attachment
 	prefix := []byte(AttachmentPrefix)
 
-	// Get all keys from the database
-	keys, err := c.kv.Keys()
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter keys by prefix and unmarshal values
-	for _, key := range keys {
-		if !bytes.HasPrefix(key, prefix) {
-			continue
-		}
-
-		data, err := c.kv.Get(key)
+	err := c.DoReadOnly(func(k *kv.KV) error {
+		// Get all keys from the database
+		keys, err := k.Keys()
 		if err != nil {
-			if errors.Is(err, kv.ErrMissingKey) {
-				continue // Key was deleted between Keys() and Get()
+			return err
+		}
+
+		// Filter keys by prefix and unmarshal values
+		for _, key := range keys {
+			if !bytes.HasPrefix(key, prefix) {
+				continue
 			}
-			return nil, err
-		}
 
-		var att models.Attachment
-		if err := json.Unmarshal(data, &att); err != nil {
-			return nil, err
-		}
+			data, err := k.Get(key)
+			if err != nil {
+				if errors.Is(err, kv.ErrMissingKey) {
+					continue // Key was deleted between Keys() and Get()
+				}
+				return err
+			}
 
-		if att.MessageID == messageID {
-			attachments = append(attachments, &att)
-		}
-	}
+			var att models.Attachment
+			if err := json.Unmarshal(data, &att); err != nil {
+				return err
+			}
 
-	return attachments, nil
+			if att.MessageID == messageID {
+				attachments = append(attachments, &att)
+			}
+		}
+		return nil
+	})
+
+	return attachments, err
 }
