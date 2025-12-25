@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/charmbracelet/charm/client"
 	"github.com/charmbracelet/charm/kv"
@@ -32,8 +33,9 @@ const DBName = "bbs"
 // Unlike the previous implementation, it does NOT hold a persistent connection.
 // Each operation opens the database, performs the operation, and closes it.
 type Client struct {
-	dbName   string
-	autoSync bool
+	dbName         string
+	autoSync       bool
+	staleThreshold time.Duration
 }
 
 // Option configures a Client.
@@ -68,8 +70,9 @@ func NewClient(opts ...Option) (*Client, error) {
 	}
 
 	c := &Client{
-		dbName:   DBName,
-		autoSync: cfg.AutoSync,
+		dbName:         DBName,
+		autoSync:       cfg.AutoSync,
+		staleThreshold: cfg.StaleThreshold,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -79,7 +82,12 @@ func NewClient(opts ...Option) (*Client, error) {
 
 // DoReadOnly executes a function with read-only database access.
 // Use this for batch read operations that need multiple Gets.
+// Automatically syncs if data is stale before executing the read operation.
 func (c *Client) DoReadOnly(fn func(k *kv.KV) error) error {
+	// Sync if stale before reading
+	if err := c.SyncIfStale(); err != nil {
+		return fmt.Errorf("stale sync: %w", err)
+	}
 	return kv.DoReadOnly(c.dbName, fn)
 }
 
@@ -146,6 +154,39 @@ func (c *Client) Sync() error {
 	return kv.Do(c.dbName, func(k *kv.KV) error {
 		return k.Sync()
 	})
+}
+
+// LastSyncTime returns the time of the last successful sync.
+func (c *Client) LastSyncTime() (time.Time, error) {
+	var lastSync time.Time
+	err := kv.DoReadOnly(c.dbName, func(k *kv.KV) error {
+		lastSync = k.LastSyncTime()
+		return nil
+	})
+	return lastSync, err
+}
+
+// IsStale returns true if the database hasn't been synced within the stale threshold.
+func (c *Client) IsStale() (bool, error) {
+	var isStale bool
+	err := kv.DoReadOnly(c.dbName, func(k *kv.KV) error {
+		isStale = k.IsStale(c.staleThreshold)
+		return nil
+	})
+	return isStale, err
+}
+
+// SyncIfStale syncs the database if it hasn't been synced within the stale threshold.
+// Returns nil if not stale or if sync succeeds.
+func (c *Client) SyncIfStale() error {
+	stale, err := c.IsStale()
+	if err != nil {
+		return err
+	}
+	if !stale {
+		return nil
+	}
+	return c.Sync()
 }
 
 // Reset clears all data (nuclear option).
