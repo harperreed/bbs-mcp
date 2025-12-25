@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.24.11
 
 // Use self-hosted charm fork with CHARM_HOST support, read-only fallback, and stale sync
-replace github.com/charmbracelet/charm => github.com/2389-research/charm v0.19.0
+replace github.com/charmbracelet/charm => github.com/2389-research/charm v0.20.0
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
