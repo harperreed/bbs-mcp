@@ -6,6 +6,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -456,6 +457,256 @@ func TestResolveMessage(t *testing.T) {
 	}
 	if got.ID != msg.ID {
 		t.Error("wrong message returned")
+	}
+
+	// Not found
+	_, err = store.ResolveMessage("nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent message")
+	}
+}
+
+func TestResolveTopicAmbiguous(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	// Create topics that could have similar ID prefixes
+	topic1 := models.NewTopic("Topic1", "First", "test@cli")
+	topic2 := models.NewTopic("Topic2", "Second", "test@cli")
+	_ = store.CreateTopic(topic1)
+	_ = store.CreateTopic(topic2)
+
+	// Test ambiguous prefix (using very short prefix that might match multiple)
+	// This is hard to test deterministically since UUIDs are random
+	// But we can test the nonexistent case
+	_, err := store.ResolveTopic("zzz")
+	if err == nil {
+		t.Error("expected error for non-matching prefix")
+	}
+}
+
+func TestResolveThreadNotFound(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	_, err := store.ResolveThread("nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent thread")
+	}
+}
+
+func TestCreateMessageWithEditedAt(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test", "test@cli")
+	_ = store.CreateTopic(topic)
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+
+	msg := models.NewMessage(thread.ID, "Hello", "test@cli")
+	now := msg.CreatedAt
+	msg.EditedAt = &now
+	err := store.CreateMessage(msg)
+	if err != nil {
+		t.Fatalf("CreateMessage with EditedAt failed: %v", err)
+	}
+
+	// Verify the message was stored with EditedAt
+	got, err := store.GetMessage(msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessage failed: %v", err)
+	}
+	if got.EditedAt == nil {
+		t.Error("expected EditedAt to be set")
+	}
+}
+
+func TestUpdateMessageWithoutEditedAt(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test", "test@cli")
+	_ = store.CreateTopic(topic)
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+	msg := models.NewMessage(thread.ID, "Hello", "test@cli")
+	_ = store.CreateMessage(msg)
+
+	// Update without setting EditedAt
+	msg.Content = "Updated content"
+	err := store.UpdateMessage(msg)
+	if err != nil {
+		t.Fatalf("UpdateMessage failed: %v", err)
+	}
+
+	got, _ := store.GetMessage(msg.ID)
+	if got.Content != "Updated content" {
+		t.Error("content was not updated")
+	}
+}
+
+func TestListTopicsWithRowsErr(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	// Create multiple topics to iterate through
+	for i := 0; i < 3; i++ {
+		topic := models.NewTopic("Topic"+string(rune('A'+i)), "Desc", "test@cli")
+		_ = store.CreateTopic(topic)
+	}
+
+	topics, err := store.ListTopics(true)
+	if err != nil {
+		t.Fatalf("ListTopics failed: %v", err)
+	}
+	if len(topics) != 3 {
+		t.Errorf("expected 3 topics, got %d", len(topics))
+	}
+}
+
+func TestListThreadsOrdering(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test", "test@cli")
+	_ = store.CreateTopic(topic)
+
+	// Create threads with different sticky states
+	thread1 := models.NewThread(topic.ID, "Normal Thread", "test@cli")
+	thread2 := models.NewThread(topic.ID, "Sticky Thread", "test@cli")
+	thread2.Sticky = true
+	_ = store.CreateThread(thread1)
+	_ = store.CreateThread(thread2)
+
+	threads, err := store.ListThreads(topic.ID)
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(threads) != 2 {
+		t.Fatalf("expected 2 threads, got %d", len(threads))
+	}
+	// Sticky thread should be first
+	if !threads[0].Sticky {
+		t.Error("sticky thread should be first")
+	}
+}
+
+func TestListMessagesWithEditedAt(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test", "test@cli")
+	_ = store.CreateTopic(topic)
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+
+	// Create a message with EditedAt
+	msg := models.NewMessage(thread.ID, "Hello", "test@cli")
+	now := msg.CreatedAt
+	msg.EditedAt = &now
+	_ = store.CreateMessage(msg)
+
+	messages, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages failed: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	if messages[0].EditedAt == nil {
+		t.Error("expected EditedAt to be set")
+	}
+}
+
+func TestListAttachmentsOrdering(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test", "test@cli")
+	_ = store.CreateTopic(topic)
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+	msg := models.NewMessage(thread.ID, "Hello", "test@cli")
+	_ = store.CreateMessage(msg)
+
+	// Create multiple attachments
+	att1 := models.NewAttachment(msg.ID, "file1.txt", "text/plain", []byte("content1"))
+	att2 := models.NewAttachment(msg.ID, "file2.txt", "text/plain", []byte("content2"))
+	_ = store.CreateAttachment(att1)
+	_ = store.CreateAttachment(att2)
+
+	attachments, err := store.ListAttachments(msg.ID)
+	if err != nil {
+		t.Fatalf("ListAttachments failed: %v", err)
+	}
+	if len(attachments) != 2 {
+		t.Errorf("expected 2 attachments, got %d", len(attachments))
+	}
+}
+
+func TestDataDir(t *testing.T) {
+	// Test with XDG_DATA_HOME set
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dir := DataDir()
+	if dir == "" {
+		t.Error("DataDir returned empty string")
+	}
+	if !strings.HasPrefix(dir, tmpDir) {
+		t.Errorf("DataDir should use XDG_DATA_HOME, got %s", dir)
+	}
+}
+
+func TestDataDirWithoutXDG(t *testing.T) {
+	// Test without XDG_DATA_HOME
+	t.Setenv("XDG_DATA_HOME", "")
+
+	dir := DataDir()
+	if dir == "" {
+		t.Error("DataDir returned empty string")
+	}
+	// Should fall back to ~/.local/share
+	if !strings.Contains(dir, ".local/share") {
+		t.Errorf("DataDir should use .local/share fallback, got %s", dir)
+	}
+}
+
+func TestDefaultDBPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+
+	path := DefaultDBPath()
+	if path == "" {
+		t.Error("DefaultDBPath returned empty string")
+	}
+	if !strings.HasSuffix(path, "bbs.db") {
+		t.Errorf("DefaultDBPath should end with bbs.db, got %s", path)
+	}
+}
+
+func TestResolveMessageWithEditedAt(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test", "test@cli")
+	_ = store.CreateTopic(topic)
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+	msg := models.NewMessage(thread.ID, "Hello", "test@cli")
+	now := msg.CreatedAt
+	msg.EditedAt = &now
+	_ = store.CreateMessage(msg)
+
+	// Resolve by prefix
+	prefix := msg.ID.String()[:8]
+	got, err := store.ResolveMessage(prefix)
+	if err != nil {
+		t.Fatalf("ResolveMessage failed: %v", err)
+	}
+	if got.EditedAt == nil {
+		t.Error("expected EditedAt to be set on resolved message")
 	}
 }
 

@@ -38,3 +38,48 @@ func TestParseIdentity(t *testing.T) {
 		t.Errorf("expected source 'cli', got '%s'", source)
 	}
 }
+
+func TestParseIdentityNoAt(t *testing.T) {
+	user, source := ParseIdentity("justusername")
+	if user != "justusername" {
+		t.Errorf("expected user 'justusername', got '%s'", user)
+	}
+	if source != "unknown" {
+		t.Errorf("expected source 'unknown', got '%s'", source)
+	}
+}
+
+func TestGetIdentityWithBBSUser(t *testing.T) {
+	t.Setenv("BBS_USER", "bbsuser")
+	// Clear USER to ensure BBS_USER is used
+	originalUser := os.Getenv("USER")
+	t.Setenv("USER", "")
+	defer t.Setenv("USER", originalUser)
+
+	got := GetIdentity("", "cli")
+	if got != "bbsuser@cli" {
+		t.Errorf("GetIdentity() = %v, want bbsuser@cli", got)
+	}
+}
+
+func TestGetIdentityAnonymous(t *testing.T) {
+	// Clear both USER and BBS_USER
+	t.Setenv("BBS_USER", "")
+	t.Setenv("USER", "")
+
+	got := GetIdentity("", "cli")
+	if got != "anonymous@cli" {
+		t.Errorf("GetIdentity() = %v, want anonymous@cli", got)
+	}
+}
+
+func TestParseIdentityMultipleAts(t *testing.T) {
+	// Test with multiple @ symbols - should only split on first
+	user, source := ParseIdentity("user@domain@source")
+	if user != "user" {
+		t.Errorf("expected user 'user', got '%s'", user)
+	}
+	if source != "domain@source" {
+		t.Errorf("expected source 'domain@source', got '%s'", source)
+	}
+}
