@@ -8,8 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/models"
+	"github.com/harper/bbs/internal/storage"
 )
 
 type TopicsLoadedMsg struct {
@@ -17,19 +17,19 @@ type TopicsLoadedMsg struct {
 }
 
 type TopicsModel struct {
-	client   *charm.Client
+	store    *storage.Store
 	topics   []*models.Topic
 	cursor   int
 	selected int
 }
 
-func NewTopicsModel(client *charm.Client) TopicsModel {
-	return TopicsModel{client: client, cursor: 0, selected: -1}
+func NewTopicsModel(store *storage.Store) TopicsModel {
+	return TopicsModel{store: store, cursor: 0, selected: -1}
 }
 
 func (m *TopicsModel) LoadTopics() tea.Cmd {
 	return func() tea.Msg {
-		topics, err := m.client.ListTopics(false)
+		topics, err := m.store.ListTopics(false)
 		if err != nil {
 			return err
 		}

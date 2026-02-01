@@ -6,7 +6,7 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/harper/bbs/internal/charm"
+	"github.com/harper/bbs/internal/storage"
 )
 
 // Pane represents which pane is focused
@@ -20,7 +20,7 @@ const (
 
 // Model is the main application state
 type Model struct {
-	client      *charm.Client
+	store       *storage.Store
 	identity    string
 	activePane  Pane
 	width       int
@@ -34,14 +34,14 @@ type Model struct {
 }
 
 // NewModel creates a new TUI model
-func NewModel(client *charm.Client, identity string) Model {
+func NewModel(store *storage.Store, identity string) Model {
 	return Model{
-		client:     client,
+		store:      store,
 		identity:   identity,
 		activePane: TopicsPane,
-		topics:     NewTopicsModel(client),
-		threads:    NewThreadsModel(client),
-		messages:   NewMessagesModel(client),
+		topics:     NewTopicsModel(store),
+		threads:    NewThreadsModel(store),
+		messages:   NewMessagesModel(store),
 	}
 }
 
@@ -216,15 +216,15 @@ func (m Model) View() string {
 	if m.composing {
 		status = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("86")).
-			Render("Composing: " + m.composeText + "█  [enter] submit  [esc] cancel")
+			Render("Composing: " + m.composeText + "_  [enter] submit  [esc] cancel")
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, main, status)
 }
 
 // Run starts the TUI
-func Run(client *charm.Client, identity string) error {
-	p := tea.NewProgram(NewModel(client, identity), tea.WithAltScreen())
+func Run(store *storage.Store, identity string) error {
+	p := tea.NewProgram(NewModel(store, identity), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

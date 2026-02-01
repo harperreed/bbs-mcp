@@ -9,8 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
-	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/models"
+	"github.com/harper/bbs/internal/storage"
 )
 
 type ThreadsLoadedMsg struct {
@@ -18,20 +18,20 @@ type ThreadsLoadedMsg struct {
 }
 
 type ThreadsModel struct {
-	client  *charm.Client
+	store   *storage.Store
 	threads []*models.Thread
 	cursor  int
 	topicID uuid.UUID
 }
 
-func NewThreadsModel(client *charm.Client) ThreadsModel {
-	return ThreadsModel{client: client, cursor: 0}
+func NewThreadsModel(store *storage.Store) ThreadsModel {
+	return ThreadsModel{store: store, cursor: 0}
 }
 
 func (m *ThreadsModel) LoadThreads(topicID uuid.UUID) tea.Cmd {
 	m.topicID = topicID
 	return func() tea.Msg {
-		threads, err := m.client.ListThreads(topicID)
+		threads, err := m.store.ListThreads(topicID)
 		if err != nil {
 			return err
 		}
@@ -82,7 +82,7 @@ func (m ThreadsModel) View() string {
 
 		prefix := ""
 		if thread.Sticky {
-			prefix = "📌 "
+			prefix = "[PIN] "
 		}
 
 		s += fmt.Sprintf("%s%s%s\n", cursor, prefix, style.Render(thread.Subject))

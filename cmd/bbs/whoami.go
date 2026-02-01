@@ -6,8 +6,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/identity"
+	"github.com/harper/bbs/internal/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -24,25 +24,6 @@ func init() {
 func runWhoami(cmd *cobra.Command, args []string) error {
 	id := identity.GetIdentity(identityFlag, "cli")
 	fmt.Printf("Identity: %s\n", id)
-
-	client, err := charm.Global()
-	if err != nil {
-		fmt.Println("Sync: not initialized")
-		return nil
-	}
-
-	charmID, err := client.ID()
-	if err != nil {
-		fmt.Println("Sync: not linked")
-	} else {
-		fmt.Printf("Charm ID: %s\n", charmID[:8])
-		cfg := client.Config()
-		host := cfg.CharmHost
-		if host == "" {
-			host = "charm.2389.dev"
-		}
-		fmt.Printf("Sync: enabled (host: %s)\n", host)
-	}
-
+	fmt.Printf("Database: %s\n", storage.DefaultDBPath())
 	return nil
 }

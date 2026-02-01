@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/mcp"
+	"github.com/harper/bbs/internal/storage"
 )
 
 var mcpCmd = &cobra.Command{
@@ -34,12 +34,13 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	client, err := charm.Global()
+	store, err := storage.NewStore(storage.DefaultDBPath())
 	if err != nil {
-		return fmt.Errorf("charm client not initialized: %w", err)
+		return fmt.Errorf("failed to open database: %w", err)
 	}
+	defer store.Close()
 
-	server, err := mcp.NewServer(client)
+	server, err := mcp.NewServer(store)
 	if err != nil {
 		return err
 	}

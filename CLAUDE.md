@@ -41,5 +41,16 @@ Identity format: `username@source` (cli, tui, mcp)
 ## Key Paths
 
 - App DB: `~/.local/share/bbs/bbs.db`
-- Vault DB: `~/.config/bbs/vault.db`
-- Sync Config: `~/.config/bbs/sync.json`
+- Config: `~/.config/bbs/config.json`
+
+## Export/Import
+
+```bash
+# Export data
+bbs export markdown output.md
+bbs export yaml output.yaml
+bbs export json output.json
+
+# Import data
+bbs import yaml backup.yaml
+```

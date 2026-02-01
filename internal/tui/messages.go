@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
-	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/models"
+	"github.com/harper/bbs/internal/storage"
 )
 
 type MessagesLoadedMsg struct {
@@ -19,21 +19,21 @@ type MessagesLoadedMsg struct {
 }
 
 type MessagesModel struct {
-	client   *charm.Client
+	store    *storage.Store
 	messages []*models.Message
 	cursor   int
 	scroll   int
 	threadID uuid.UUID
 }
 
-func NewMessagesModel(client *charm.Client) MessagesModel {
-	return MessagesModel{client: client, cursor: 0, scroll: 0}
+func NewMessagesModel(store *storage.Store) MessagesModel {
+	return MessagesModel{store: store, cursor: 0, scroll: 0}
 }
 
 func (m *MessagesModel) LoadMessages(threadID uuid.UUID) tea.Cmd {
 	m.threadID = threadID
 	return func() tea.Msg {
-		messages, err := m.client.ListMessages(threadID)
+		messages, err := m.store.ListMessages(threadID)
 		if err != nil {
 			return err
 		}
@@ -88,7 +88,7 @@ func (m MessagesModel) View() string {
 			edited = " (edited)"
 		}
 		s += headerStyle.Render(msg.CreatedBy)
-		s += faintStyle.Render(fmt.Sprintf(" · %s%s\n", msg.CreatedAt.Format("Jan 02 15:04"), edited))
+		s += faintStyle.Render(fmt.Sprintf(" - %s%s\n", msg.CreatedAt.Format("Jan 02 15:04"), edited))
 
 		// Content (truncate long messages)
 		content := msg.Content

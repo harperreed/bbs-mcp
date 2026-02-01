@@ -1,5 +1,5 @@
 // ABOUTME: Root Cobra command and global flags
-// ABOUTME: Sets up CLI structure and Charm KV connection
+// ABOUTME: Sets up CLI structure and SQLite storage connection
 
 package main
 
@@ -8,13 +8,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/harper/bbs/internal/charm"
-	"github.com/harper/bbs/internal/config"
 	"github.com/harper/bbs/internal/identity"
+	"github.com/harper/bbs/internal/storage"
 	"github.com/harper/bbs/internal/tui"
 )
 
 var identityFlag string
+
+// globalStore holds the database connection for CLI commands
+var globalStore *storage.Store
 
 var rootCmd = &cobra.Command{
 	Use:   "bbs",
@@ -32,14 +34,15 @@ var rootCmd = &cobra.Command{
 A message board for humans and agents to communicate.
 Topics → Threads → Messages
 
-Data syncs automatically to the cloud via Charm.`,
+Data is stored locally in SQLite.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Launch TUI if no subcommand
-		client, err := charm.Global()
+		store, err := storage.NewStore(storage.DefaultDBPath())
 		if err != nil {
-			return fmt.Errorf("failed to get charm client: %w", err)
+			return fmt.Errorf("failed to open database: %w", err)
 		}
-		return tui.Run(client, identity.GetIdentity(identityFlag, "tui"))
+		defer store.Close()
+		return tui.Run(store, identity.GetIdentity(identityFlag, "tui"))
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip init for help commands
@@ -47,22 +50,21 @@ Data syncs automatically to the cloud via Charm.`,
 			return nil
 		}
 
-		// Load config and apply environment
-		cfg, err := config.Load()
+		// Initialize global store for subcommands that need it
+		// Note: Commands that use globalStore should handle nil check
+		store, err := storage.NewStore(storage.DefaultDBPath())
 		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
+			return fmt.Errorf("failed to open database: %w", err)
 		}
-		cfg.ApplyEnvironment()
-
-		// Initialize Charm
-		if err := charm.InitGlobal(); err != nil {
-			return fmt.Errorf("failed to initialize charm: %w", err)
-		}
+		globalStore = store
 
 		return nil
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
-		// Charm client is global, no need to close per-command
+		if globalStore != nil {
+			globalStore.Close()
+			globalStore = nil
+		}
 		return nil
 	},
 }

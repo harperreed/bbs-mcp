@@ -39,6 +39,12 @@ func TestNewThread(t *testing.T) {
 	if thread.Subject != "Test subject" {
 		t.Errorf("expected subject 'Test subject', got '%s'", thread.Subject)
 	}
+	if thread.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be set")
+	}
+	if thread.UpdatedAt != thread.CreatedAt {
+		t.Error("expected UpdatedAt to equal CreatedAt on new thread")
+	}
 }
 
 func TestNewMessage(t *testing.T) {

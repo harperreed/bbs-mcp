@@ -11,7 +11,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
 )
@@ -60,17 +59,12 @@ func init() {
 }
 
 func runThreadList(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
+	topic, err := globalStore.ResolveTopic(args[0])
 	if err != nil {
 		return err
 	}
 
-	topic, err := client.ResolveTopic(args[0])
-	if err != nil {
-		return err
-	}
-
-	threads, err := client.ListThreads(topic.ID)
+	threads, err := globalStore.ListThreads(topic.ID)
 	if err != nil {
 		return err
 	}
@@ -85,7 +79,7 @@ func runThreadList(cmd *cobra.Command, args []string) error {
 	for _, t := range threads {
 		prefix := ""
 		if t.Sticky {
-			prefix = "📌 "
+			prefix = "[PIN] "
 		}
 		fmt.Fprintf(w, "%s%s\t%s\t%s\n", prefix, t.Subject, t.CreatedBy, t.CreatedAt.Format("Jan 02"))
 	}
@@ -93,12 +87,7 @@ func runThreadList(cmd *cobra.Command, args []string) error {
 }
 
 func runThreadNew(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
-	if err != nil {
-		return err
-	}
-
-	topic, err := client.ResolveTopic(args[0])
+	topic, err := globalStore.ResolveTopic(args[0])
 	if err != nil {
 		return err
 	}
@@ -106,7 +95,7 @@ func runThreadNew(cmd *cobra.Command, args []string) error {
 	id := identity.GetIdentity(identityFlag, "cli")
 	thread := models.NewThread(topic.ID, args[1], id)
 
-	if err := client.CreateThread(thread); err != nil {
+	if err := globalStore.CreateThread(thread); err != nil {
 		return fmt.Errorf("failed to create thread: %w", err)
 	}
 
@@ -116,24 +105,19 @@ func runThreadNew(cmd *cobra.Command, args []string) error {
 }
 
 func runThreadShow(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
-	if err != nil {
-		return err
-	}
-
-	thread, err := client.ResolveThread(args[0])
+	thread, err := globalStore.ResolveThread(args[0])
 	if err != nil {
 		return fmt.Errorf("thread not found: %s", args[0])
 	}
 
 	if thread.Sticky {
-		fmt.Print("📌 ")
+		fmt.Print("[PIN] ")
 	}
 	fmt.Printf("%s\n", thread.Subject)
 	faint := color.New(color.Faint)
 	faint.Printf("by %s on %s\n\n", thread.CreatedBy, thread.CreatedAt.Format("2006-01-02 15:04"))
 
-	messages, err := client.ListMessages(thread.ID)
+	messages, err := globalStore.ListMessages(thread.ID)
 	if err != nil {
 		return err
 	}
@@ -157,23 +141,18 @@ func runThreadShow(cmd *cobra.Command, args []string) error {
 }
 
 func runThreadSticky(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
-	if err != nil {
-		return err
-	}
-
-	thread, err := client.ResolveThread(args[0])
+	thread, err := globalStore.ResolveThread(args[0])
 	if err != nil {
 		return err
 	}
 
 	sticky := !unsticky
-	if err := client.SetThreadSticky(thread.ID, sticky); err != nil {
+	if err := globalStore.SetThreadSticky(thread.ID, sticky); err != nil {
 		return err
 	}
 
 	if sticky {
-		color.Green("📌 Pinned thread")
+		color.Green("[PIN] Pinned thread")
 	} else {
 		color.Yellow("Unpinned thread")
 	}

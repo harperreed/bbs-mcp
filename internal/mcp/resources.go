@@ -44,7 +44,7 @@ func (s *Server) registerResources() {
 }
 
 func (s *Server) handleTopicsResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-	topics, err := s.client.ListTopics(false)
+	topics, err := s.store.ListTopics(false)
 	if err != nil {
 		return nil, err
 	}
@@ -60,13 +60,13 @@ func (s *Server) handleTopicsResource(ctx context.Context, req *mcp.ReadResource
 }
 
 func (s *Server) handleRecentResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-	topics, _ := s.client.ListTopics(false)
+	topics, _ := s.store.ListTopics(false)
 
 	var sb strings.Builder
 	sb.WriteString("# Recent Activity\n\n")
 
 	for _, topic := range topics {
-		threads, _ := s.client.ListThreads(topic.ID)
+		threads, _ := s.store.ListThreads(topic.ID)
 		if len(threads) == 0 {
 			continue
 		}
@@ -102,12 +102,12 @@ func (s *Server) handleTopicThreadsResource(ctx context.Context, req *mcp.ReadRe
 	}
 	topicName := parts[3]
 
-	topic, err := s.client.ResolveTopic(topicName)
+	topic, err := s.store.ResolveTopic(topicName)
 	if err != nil {
 		return nil, err
 	}
 
-	threads, err := s.client.ListThreads(topic.ID)
+	threads, err := s.store.ListThreads(topic.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -130,12 +130,12 @@ func (s *Server) handleThreadMessagesResource(ctx context.Context, req *mcp.Read
 	}
 	threadID := parts[3]
 
-	thread, err := s.client.ResolveThread(threadID)
+	thread, err := s.store.ResolveThread(threadID)
 	if err != nil {
 		return nil, err
 	}
 
-	messages, err := s.client.ListMessages(thread.ID)
+	messages, err := s.store.ListMessages(thread.ID)
 	if err != nil {
 		return nil, err
 	}

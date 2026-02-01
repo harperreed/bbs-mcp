@@ -33,6 +33,7 @@ type Thread struct {
 	Subject   string
 	CreatedAt time.Time
 	CreatedBy string
+	UpdatedAt time.Time
 	Sticky    bool
 }
 
@@ -70,12 +71,14 @@ func NewTopic(name, description, createdBy string) *Topic {
 
 // NewThread creates a new thread with generated UUID and timestamp.
 func NewThread(topicID uuid.UUID, subject, createdBy string) *Thread {
+	now := time.Now()
 	return &Thread{
 		ID:        uuid.New(),
 		TopicID:   topicID,
 		Subject:   subject,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
 		CreatedBy: createdBy,
+		UpdatedAt: now,
 		Sticky:    false,
 	}
 }

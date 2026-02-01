@@ -9,19 +9,19 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/harper/bbs/internal/charm"
+	"github.com/harper/bbs/internal/storage"
 )
 
-// Server wraps MCP server with Charm client.
+// Server wraps MCP server with storage.
 type Server struct {
-	mcp    *mcp.Server
-	client *charm.Client
+	mcp   *mcp.Server
+	store *storage.Store
 }
 
 // NewServer creates MCP server with all capabilities.
-func NewServer(client *charm.Client) (*Server, error) {
-	if client == nil {
-		return nil, fmt.Errorf("charm client is required")
+func NewServer(store *storage.Store) (*Server, error) {
+	if store == nil {
+		return nil, fmt.Errorf("storage is required")
 	}
 
 	mcpServer := mcp.NewServer(
@@ -33,8 +33,8 @@ func NewServer(client *charm.Client) (*Server, error) {
 	)
 
 	s := &Server{
-		mcp:    mcpServer,
-		client: client,
+		mcp:   mcpServer,
+		store: store,
 	}
 
 	s.registerTools()

@@ -11,7 +11,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/harper/bbs/internal/charm"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/models"
 )
@@ -63,12 +62,7 @@ func init() {
 }
 
 func runTopicList(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
-	if err != nil {
-		return err
-	}
-
-	topics, err := client.ListTopics(showArchived)
+	topics, err := globalStore.ListTopics(showArchived)
 	if err != nil {
 		return err
 	}
@@ -87,11 +81,6 @@ func runTopicList(cmd *cobra.Command, args []string) error {
 }
 
 func runTopicNew(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
-	if err != nil {
-		return err
-	}
-
 	name := args[0]
 	description := ""
 	if len(args) > 1 {
@@ -101,7 +90,7 @@ func runTopicNew(cmd *cobra.Command, args []string) error {
 	id := identity.GetIdentity(identityFlag, "cli")
 	topic := models.NewTopic(name, description, id)
 
-	if err := client.CreateTopic(topic); err != nil {
+	if err := globalStore.CreateTopic(topic); err != nil {
 		return fmt.Errorf("failed to create topic: %w", err)
 	}
 
@@ -111,18 +100,13 @@ func runTopicNew(cmd *cobra.Command, args []string) error {
 }
 
 func runTopicArchive(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
-	if err != nil {
-		return err
-	}
-
-	topic, err := client.ResolveTopic(args[0])
+	topic, err := globalStore.ResolveTopic(args[0])
 	if err != nil {
 		return err
 	}
 
 	archived := !unarchive
-	if err := client.ArchiveTopic(topic.ID, archived); err != nil {
+	if err := globalStore.ArchiveTopic(topic.ID, archived); err != nil {
 		return err
 	}
 
@@ -135,12 +119,7 @@ func runTopicArchive(cmd *cobra.Command, args []string) error {
 }
 
 func runTopicShow(cmd *cobra.Command, args []string) error {
-	client, err := charm.Global()
-	if err != nil {
-		return err
-	}
-
-	topic, err := client.ResolveTopic(args[0])
+	topic, err := globalStore.ResolveTopic(args[0])
 	if err != nil {
 		return fmt.Errorf("topic not found: %s", args[0])
 	}
@@ -154,7 +133,7 @@ func runTopicShow(cmd *cobra.Command, args []string) error {
 	}
 
 	// Show recent threads
-	threads, _ := client.ListThreads(topic.ID)
+	threads, _ := globalStore.ListThreads(topic.ID)
 	if len(threads) > 0 {
 		fmt.Printf("\nRecent threads (%d):\n", len(threads))
 		for i, t := range threads {
@@ -164,7 +143,7 @@ func runTopicShow(cmd *cobra.Command, args []string) error {
 			}
 			prefix := "  "
 			if t.Sticky {
-				prefix = "📌"
+				prefix = "[PIN]"
 			}
 			fmt.Printf("%s %s (%s)\n", prefix, t.Subject, t.CreatedBy)
 		}
