@@ -321,6 +321,7 @@ func writeOutput(args []string, content, defaultName string) error {
 	return nil
 }
 
+//nolint:gocognit // Complex but clear import logic with nested data structures
 func runImportYAML(cmd *cobra.Command, args []string) error {
 	data, err := os.ReadFile(args[0])
 	if err != nil {
