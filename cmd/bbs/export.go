@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/harper/bbs/internal/config"
 	"github.com/harper/bbs/internal/models"
 	"github.com/harper/bbs/internal/storage"
 )
@@ -206,9 +207,13 @@ func buildExportData(store storage.Storage) (*ExportData, error) {
 }
 
 func runExportMarkdown(cmd *cobra.Command, args []string) error {
-	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
+	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return fmt.Errorf("load config: %w", err)
+	}
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
 	}
 	defer store.Close()
 
@@ -262,9 +267,13 @@ func runExportMarkdown(cmd *cobra.Command, args []string) error {
 }
 
 func runExportYAML(cmd *cobra.Command, args []string) error {
-	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
+	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return fmt.Errorf("load config: %w", err)
+	}
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
 	}
 	defer store.Close()
 
@@ -282,9 +291,13 @@ func runExportYAML(cmd *cobra.Command, args []string) error {
 }
 
 func runExportJSON(cmd *cobra.Command, args []string) error {
-	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
+	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return fmt.Errorf("load config: %w", err)
+	}
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
 	}
 	defer store.Close()
 
@@ -337,9 +350,13 @@ func runImportYAML(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid export file: tool is %q, expected %q", exportData.Tool, "bbs")
 	}
 
-	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
+	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return fmt.Errorf("load config: %w", err)
+	}
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
 	}
 	defer store.Close()
 

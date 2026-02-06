@@ -1,9 +1,10 @@
 // ABOUTME: Tests for config functionality
-// ABOUTME: Verifies config load, save, and path resolution
+// ABOUTME: Verifies config load, save, path resolution, defaults, and backend factory
 
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,5 +222,236 @@ func TestLoadValidJSON(t *testing.T) {
 	}
 	if cfg == nil {
 		t.Error("Load returned nil config")
+	}
+}
+
+func TestDefaultBackend(t *testing.T) {
+	cfg := &Config{}
+	backend := cfg.GetBackend()
+	if backend != "sqlite" {
+		t.Errorf("expected default backend 'sqlite', got %q", backend)
+	}
+}
+
+func TestExplicitBackend(t *testing.T) {
+	cfg := &Config{Backend: "markdown"}
+	backend := cfg.GetBackend()
+	if backend != "markdown" {
+		t.Errorf("expected backend 'markdown', got %q", backend)
+	}
+}
+
+func TestDefaultDataDir(t *testing.T) {
+	cfg := &Config{}
+	dataDir := cfg.GetDataDir()
+	if dataDir == "" {
+		t.Error("GetDataDir returned empty string")
+	}
+	if !filepath.IsAbs(dataDir) {
+		t.Errorf("GetDataDir returned non-absolute path: %s", dataDir)
+	}
+	// Should end with "bbs" directory
+	if filepath.Base(dataDir) != "bbs" {
+		t.Errorf("GetDataDir should end with 'bbs', got %s", dataDir)
+	}
+}
+
+func TestExplicitDataDir(t *testing.T) {
+	cfg := &Config{DataDir: "/custom/data/path"}
+	dataDir := cfg.GetDataDir()
+	if dataDir != "/custom/data/path" {
+		t.Errorf("expected '/custom/data/path', got %q", dataDir)
+	}
+}
+
+func TestDataDirTildeExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot get home dir: %v", err)
+	}
+
+	cfg := &Config{DataDir: "~/my-bbs-data"}
+	dataDir := cfg.GetDataDir()
+	expected := filepath.Join(home, "my-bbs-data")
+	if dataDir != expected {
+		t.Errorf("expected %q, got %q", expected, dataDir)
+	}
+}
+
+func TestDataDirTildeOnlyExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot get home dir: %v", err)
+	}
+
+	cfg := &Config{DataDir: "~"}
+	dataDir := cfg.GetDataDir()
+	if dataDir != home {
+		t.Errorf("expected %q, got %q", home, dataDir)
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot get home dir: %v", err)
+	}
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"~/foo", filepath.Join(home, "foo")},
+		{"~", home},
+		{"/absolute/path", "/absolute/path"},
+		{"relative/path", "relative/path"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		result := ExpandPath(tt.input)
+		if result != tt.expected {
+			t.Errorf("ExpandPath(%q) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestSaveAndLoadWithBackendFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	cfg := &Config{
+		Backend: "markdown",
+		DataDir: "/custom/data",
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if loaded.Backend != "markdown" {
+		t.Errorf("expected backend 'markdown', got %q", loaded.Backend)
+	}
+	if loaded.DataDir != "/custom/data" {
+		t.Errorf("expected data_dir '/custom/data', got %q", loaded.DataDir)
+	}
+}
+
+func TestSaveAndLoadPreservesJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	cfg := &Config{
+		Backend: "sqlite",
+		DataDir: "~/my-data",
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Read raw JSON and verify field names
+	path := GetConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw JSON: %v", err)
+	}
+
+	if raw["backend"] != "sqlite" {
+		t.Errorf("expected JSON key 'backend' with value 'sqlite', got %v", raw["backend"])
+	}
+	if raw["data_dir"] != "~/my-data" {
+		t.Errorf("expected JSON key 'data_dir' with value '~/my-data', got %v", raw["data_dir"])
+	}
+}
+
+func TestOpenStorageSqliteBackend(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+
+	cfg := &Config{
+		Backend: "sqlite",
+		DataDir: tmpDir,
+	}
+
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		t.Fatalf("OpenStorage failed for sqlite: %v", err)
+	}
+	defer store.Close()
+}
+
+func TestOpenStorageDefaultBackend(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &Config{
+		DataDir: tmpDir,
+	}
+
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		t.Fatalf("OpenStorage failed for default backend: %v", err)
+	}
+	defer store.Close()
+}
+
+func TestOpenStorageMarkdownBackendNotImplemented(t *testing.T) {
+	cfg := &Config{
+		Backend: "markdown",
+		DataDir: "/tmp/bbs-test",
+	}
+
+	_, err := cfg.OpenStorage()
+	if err == nil {
+		t.Fatal("expected error for markdown backend, got nil")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("expected 'not yet implemented' error, got: %v", err)
+	}
+}
+
+func TestOpenStorageUnknownBackend(t *testing.T) {
+	cfg := &Config{
+		Backend: "redis",
+		DataDir: "/tmp/bbs-test",
+	}
+
+	_, err := cfg.OpenStorage()
+	if err == nil {
+		t.Fatal("expected error for unknown backend, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown backend") {
+		t.Errorf("expected 'unknown backend' error, got: %v", err)
+	}
+}
+
+func TestOpenStorageSqliteCreatesDBInDataDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &Config{
+		Backend: "sqlite",
+		DataDir: tmpDir,
+	}
+
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		t.Fatalf("OpenStorage failed: %v", err)
+	}
+	defer store.Close()
+
+	// Verify the database file was created in the data dir
+	dbPath := filepath.Join(tmpDir, "bbs.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Errorf("expected database file at %s", dbPath)
 	}
 }

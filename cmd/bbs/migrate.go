@@ -1,5 +1,5 @@
 // ABOUTME: Migration command placeholder
-// ABOUTME: For future migrations if needed
+// ABOUTME: Shows current backend info and migration instructions
 
 package main
 
@@ -9,7 +9,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/harper/bbs/internal/storage"
+	"github.com/harper/bbs/internal/config"
 )
 
 var migrateCmd = &cobra.Command{
@@ -29,8 +29,11 @@ func init() {
 }
 
 func runMigrate(cmd *cobra.Command, args []string) error {
-	// Check if database exists
-	dbPath := storage.DefaultDBPath()
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	color.Yellow("Migration from Charm KV is no longer available.")
 	fmt.Println()
 	fmt.Println("To migrate from an older version of BBS:")
@@ -38,6 +41,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	fmt.Println("  2. Update to this version")
 	fmt.Println("  3. Run 'bbs import yaml backup.yaml'")
 	fmt.Println()
-	fmt.Printf("Database path: %s\n", dbPath)
+	fmt.Printf("Backend:  %s\n", cfg.GetBackend())
+	fmt.Printf("Data dir: %s\n", cfg.GetDataDir())
 	return nil
 }

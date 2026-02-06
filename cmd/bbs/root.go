@@ -1,5 +1,5 @@
 // ABOUTME: Root Cobra command and global flags
-// ABOUTME: Sets up CLI structure and SQLite storage connection
+// ABOUTME: Sets up CLI structure and config-driven storage connection
 
 package main
 
@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/harper/bbs/internal/config"
 	"github.com/harper/bbs/internal/identity"
 	"github.com/harper/bbs/internal/storage"
 	"github.com/harper/bbs/internal/tui"
@@ -34,12 +35,16 @@ var rootCmd = &cobra.Command{
 A message board for humans and agents to communicate.
 Topics → Threads → Messages
 
-Data is stored locally in SQLite.`,
+Data is stored locally.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Launch TUI if no subcommand
-		store, err := storage.NewSqliteStore(storage.DefaultDBPath())
+		cfg, err := config.Load()
 		if err != nil {
-			return fmt.Errorf("failed to open database: %w", err)
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+		store, err := cfg.OpenStorage()
+		if err != nil {
+			return fmt.Errorf("failed to open storage: %w", err)
 		}
 		defer store.Close()
 		return tui.Run(store, identity.GetIdentity(identityFlag, "tui"))
@@ -50,11 +55,14 @@ Data is stored locally in SQLite.`,
 			return nil
 		}
 
-		// Initialize global store for subcommands that need it
-		// Note: Commands that use globalStore should handle nil check
-		store, err := storage.NewSqliteStore(storage.DefaultDBPath())
+		// Load config and initialize global store for subcommands
+		cfg, err := config.Load()
 		if err != nil {
-			return fmt.Errorf("failed to open database: %w", err)
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+		store, err := cfg.OpenStorage()
+		if err != nil {
+			return fmt.Errorf("failed to open storage: %w", err)
 		}
 		globalStore = store
 

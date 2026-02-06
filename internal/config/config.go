@@ -1,20 +1,79 @@
-// ABOUTME: BBS configuration management
-// ABOUTME: Handles settings and preferences
+// ABOUTME: BBS configuration management with backend selection
+// ABOUTME: Handles settings, preferences, and storage backend factory
 
 package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/harper/bbs/internal/storage"
 )
 
-// Config stores BBS configuration
+// Config stores BBS configuration.
 type Config struct {
-	// Add future configuration options here
+	// Backend selects the storage backend: "sqlite" (default) or "markdown".
+	Backend string `json:"backend,omitempty"`
+
+	// DataDir is the root directory for data storage.
+	// SQLite puts bbs.db here. Markdown puts _topics.yaml and topic folders here.
+	// Supports ~ expansion for home directory. Defaults to ~/.local/share/bbs.
+	DataDir string `json:"data_dir,omitempty"`
 }
 
-// GetConfigPath returns the config file path
+// GetBackend returns the configured backend, defaulting to "sqlite".
+func (c *Config) GetBackend() string {
+	if c.Backend == "" {
+		return "sqlite"
+	}
+	return c.Backend
+}
+
+// GetDataDir returns the configured data directory with ~ expanded,
+// defaulting to the standard XDG data directory.
+func (c *Config) GetDataDir() string {
+	if c.DataDir == "" {
+		return storage.DataDir()
+	}
+	return ExpandPath(c.DataDir)
+}
+
+// ExpandPath expands a leading ~ to the user's home directory.
+func ExpandPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if path == "~" {
+		home, _ := os.UserHomeDir()
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+// OpenStorage creates a Storage implementation based on the configured backend.
+func (c *Config) OpenStorage() (storage.Storage, error) {
+	backend := c.GetBackend()
+	dataDir := c.GetDataDir()
+
+	switch backend {
+	case "sqlite":
+		dbPath := filepath.Join(dataDir, "bbs.db")
+		return storage.NewSqliteStore(dbPath)
+	case "markdown":
+		return nil, fmt.Errorf("markdown backend not yet implemented")
+	default:
+		return nil, fmt.Errorf("unknown backend: %q", backend)
+	}
+}
+
+// GetConfigPath returns the config file path.
 func GetConfigPath() string {
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" {
@@ -24,7 +83,7 @@ func GetConfigPath() string {
 	return filepath.Join(configDir, "bbs", "config.json")
 }
 
-// Load reads config from disk
+// Load reads config from disk.
 func Load() (*Config, error) {
 	path := GetConfigPath()
 	data, err := os.ReadFile(path)
@@ -42,7 +101,7 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes config to disk
+// Save writes config to disk.
 func (c *Config) Save() error {
 	path := GetConfigPath()
 	dir := filepath.Dir(path)

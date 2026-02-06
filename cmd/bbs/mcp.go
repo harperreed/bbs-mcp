@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/harper/bbs/internal/config"
 	"github.com/harper/bbs/internal/mcp"
-	"github.com/harper/bbs/internal/storage"
 )
 
 var mcpCmd = &cobra.Command{
@@ -34,9 +34,14 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
+	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		return fmt.Errorf("failed to open storage: %w", err)
 	}
 	defer store.Close()
 
