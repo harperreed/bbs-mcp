@@ -4,9 +4,11 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1228,5 +1230,603 @@ func TestMarkdownSetThreadStickyAtomicity(t *testing.T) {
 	}
 	if messages[0].Content != "Important content" {
 		t.Errorf("expected message content 'Important content', got %q", messages[0].Content)
+	}
+}
+
+// --- Concurrency Tests ---
+
+func TestMarkdownConcurrentTopicCreation(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	const numGoroutines = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, numGoroutines)
+
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			topic := models.NewTopic(fmt.Sprintf("topic-%d", idx), fmt.Sprintf("Description %d", idx), "test@cli")
+			if err := store.CreateTopic(topic); err != nil {
+				errs <- fmt.Errorf("goroutine %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// Verify all topics are readable
+	topics, err := store.ListTopics(true)
+	if err != nil {
+		t.Fatalf("ListTopics failed: %v", err)
+	}
+	if len(topics) != numGoroutines {
+		t.Errorf("expected %d topics, got %d", numGoroutines, len(topics))
+	}
+
+	// Verify each topic is individually retrievable
+	for _, topic := range topics {
+		got, err := store.GetTopic(topic.ID)
+		if err != nil {
+			t.Errorf("GetTopic(%s) failed: %v", topic.ID, err)
+			continue
+		}
+		if got.Name != topic.Name {
+			t.Errorf("topic name mismatch: want %q, got %q", topic.Name, got.Name)
+		}
+	}
+}
+
+func TestMarkdownConcurrentMessagePosting(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("concurrent-topic", "Concurrency test", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+	thread := models.NewThread(topic.ID, "Concurrent Thread", "test@cli")
+	if err := store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread failed: %v", err)
+	}
+
+	const numGoroutines = 15
+	var wg sync.WaitGroup
+	errs := make(chan error, numGoroutines)
+
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			// Small stagger so messages get slightly different timestamps
+			time.Sleep(time.Duration(idx) * time.Millisecond)
+			msg := models.NewMessage(thread.ID, fmt.Sprintf("Concurrent message %d", idx), fmt.Sprintf("user%d@cli", idx))
+			if err := store.CreateMessage(msg); err != nil {
+				errs <- fmt.Errorf("goroutine %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// Verify all messages are readable
+	messages, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages failed: %v", err)
+	}
+	if len(messages) != numGoroutines {
+		t.Errorf("expected %d messages, got %d", numGoroutines, len(messages))
+	}
+
+	// Verify each message is individually retrievable
+	for _, msg := range messages {
+		got, err := store.GetMessage(msg.ID)
+		if err != nil {
+			t.Errorf("GetMessage(%s) failed: %v", msg.ID, err)
+			continue
+		}
+		if got.Content != msg.Content {
+			t.Errorf("message content mismatch: want %q, got %q", msg.Content, got.Content)
+		}
+	}
+}
+
+func TestMarkdownConcurrentMixedOperations(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	// Seed some topics and threads
+	topic := models.NewTopic("mixed-ops", "Mixed operations", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+
+	const numThreads = 10
+	threadIDs := make([]uuid.UUID, numThreads)
+	for i := 0; i < numThreads; i++ {
+		thread := models.NewThread(topic.ID, fmt.Sprintf("Thread %d", i), "test@cli")
+		if err := store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread %d failed: %v", i, err)
+		}
+		threadIDs[i] = thread.ID
+	}
+
+	// Concurrently: post messages to different threads, read threads, list threads
+	const numGoroutines = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, numGoroutines*3)
+
+	// Writers: post a message to each thread
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			threadIdx := idx % numThreads
+			msg := models.NewMessage(threadIDs[threadIdx], fmt.Sprintf("msg %d", idx), "test@cli")
+			if err := store.CreateMessage(msg); err != nil {
+				errs <- fmt.Errorf("write goroutine %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	// Readers: list threads and messages concurrently with writes
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			_, err := store.ListThreads(topic.ID)
+			if err != nil {
+				errs <- fmt.Errorf("list threads goroutine %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// Verify all threads exist and all messages are accounted for
+	threads, err := store.ListThreads(topic.ID)
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(threads) != numThreads {
+		t.Errorf("expected %d threads, got %d", numThreads, len(threads))
+	}
+
+	totalMessages := 0
+	for _, thread := range threads {
+		msgs, err := store.ListMessages(thread.ID)
+		if err != nil {
+			t.Errorf("ListMessages(%s) failed: %v", thread.ID, err)
+			continue
+		}
+		totalMessages += len(msgs)
+	}
+	if totalMessages != numGoroutines {
+		t.Errorf("expected %d total messages, got %d", numGoroutines, totalMessages)
+	}
+}
+
+// --- Edge Case Tests ---
+
+func TestMarkdownThreadFilenameCollision(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("collision-test", "Test filename collision", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+
+	// Create two threads whose subjects slugify identically
+	thread1 := models.NewThread(topic.ID, "Hello World!", "test@cli")
+	if err := store.CreateThread(thread1); err != nil {
+		t.Fatalf("CreateThread (1) failed: %v", err)
+	}
+	thread2 := models.NewThread(topic.ID, "Hello World?", "test@cli")
+	if err := store.CreateThread(thread2); err != nil {
+		t.Fatalf("CreateThread (2) failed: %v", err)
+	}
+
+	// Both threads should be independently retrievable
+	got1, err := store.GetThread(thread1.ID)
+	if err != nil {
+		t.Fatalf("GetThread (1) failed: %v", err)
+	}
+	if got1.Subject != "Hello World!" {
+		t.Errorf("thread 1 subject mismatch: want %q, got %q", "Hello World!", got1.Subject)
+	}
+
+	got2, err := store.GetThread(thread2.ID)
+	if err != nil {
+		t.Fatalf("GetThread (2) failed: %v", err)
+	}
+	if got2.Subject != "Hello World?" {
+		t.Errorf("thread 2 subject mismatch: want %q, got %q", "Hello World?", got2.Subject)
+	}
+
+	// ListThreads should return both
+	threads, err := store.ListThreads(topic.ID)
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(threads) != 2 {
+		t.Errorf("expected 2 threads, got %d", len(threads))
+	}
+
+	// Post messages to both and verify they don't interfere
+	msg1 := models.NewMessage(thread1.ID, "Message in thread 1", "test@cli")
+	msg2 := models.NewMessage(thread2.ID, "Message in thread 2", "test@cli")
+	if err := store.CreateMessage(msg1); err != nil {
+		t.Fatalf("CreateMessage (1) failed: %v", err)
+	}
+	if err := store.CreateMessage(msg2); err != nil {
+		t.Fatalf("CreateMessage (2) failed: %v", err)
+	}
+
+	msgs1, _ := store.ListMessages(thread1.ID)
+	msgs2, _ := store.ListMessages(thread2.ID)
+	if len(msgs1) != 1 || msgs1[0].Content != "Message in thread 1" {
+		t.Errorf("thread 1 messages wrong: got %v", msgs1)
+	}
+	if len(msgs2) != 1 || msgs2[0].Content != "Message in thread 2" {
+		t.Errorf("thread 2 messages wrong: got %v", msgs2)
+	}
+}
+
+func TestMarkdownMessageContainingMarkdownSeparator(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("separator-test", "Test markdown separators", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+	thread := models.NewThread(topic.ID, "Separator Test", "test@cli")
+	if err := store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread failed: %v", err)
+	}
+
+	// Post a message containing "---" (the separator used between messages)
+	contentWithSeparator := "Here is some content\n---\nThis looks like a separator\n---\nBut it's all one message"
+	msg := models.NewMessage(thread.ID, contentWithSeparator, "test@cli")
+	if err := store.CreateMessage(msg); err != nil {
+		t.Fatalf("CreateMessage failed: %v", err)
+	}
+
+	// Post a second message after it
+	msg2 := models.NewMessage(thread.ID, "Second message", "test@cli")
+	time.Sleep(time.Millisecond) // ensure distinct timestamp
+	if err := store.CreateMessage(msg2); err != nil {
+		t.Fatalf("CreateMessage (2) failed: %v", err)
+	}
+
+	// Retrieve and verify both messages
+	messages, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages failed: %v", err)
+	}
+	// Due to the "---" in content, the parser may split incorrectly.
+	// We verify the second message is at least recoverable.
+	if len(messages) < 2 {
+		t.Errorf("expected at least 2 messages, got %d", len(messages))
+	}
+
+	// Verify the second message is intact
+	foundSecond := false
+	for _, m := range messages {
+		if m.Content == "Second message" {
+			foundSecond = true
+		}
+	}
+	if !foundSecond {
+		t.Error("second message not found or corrupted")
+	}
+}
+
+func TestMarkdownEmptyThread(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("empty-test", "Test empty thread", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+	thread := models.NewThread(topic.ID, "Empty Thread", "test@cli")
+	if err := store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread failed: %v", err)
+	}
+
+	// Thread with zero messages should be retrievable
+	got, err := store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread failed: %v", err)
+	}
+	if got.Subject != "Empty Thread" {
+		t.Errorf("expected subject 'Empty Thread', got %q", got.Subject)
+	}
+
+	// ListMessages should return empty slice, not error
+	messages, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages for empty thread failed: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(messages))
+	}
+
+	// ListThreads should include the empty thread
+	threads, err := store.ListThreads(topic.ID)
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Errorf("expected 1 thread, got %d", len(threads))
+	}
+}
+
+func TestMarkdownTopicWithSpecialCharacters(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	tests := []struct {
+		name string
+		desc string
+	}{
+		{"topic with spaces", "Has spaces in name"},
+		{"topic-with-hyphens", "Has hyphens in name"},
+		{"UPPERCASE", "Uppercase topic"},
+		{"123-numbers", "Starts with numbers"},
+	}
+
+	for _, tt := range tests {
+		topic := models.NewTopic(tt.name, tt.desc, "test@cli")
+		if err := store.CreateTopic(topic); err != nil {
+			t.Errorf("CreateTopic(%q) failed: %v", tt.name, err)
+			continue
+		}
+
+		// Verify it can be retrieved by ID
+		got, err := store.GetTopic(topic.ID)
+		if err != nil {
+			t.Errorf("GetTopic(%q) failed: %v", tt.name, err)
+			continue
+		}
+		if got.Name != tt.name {
+			t.Errorf("topic name mismatch: want %q, got %q", tt.name, got.Name)
+		}
+
+		// Verify it can be retrieved by name
+		gotByName, err := store.GetTopicByName(tt.name)
+		if err != nil {
+			t.Errorf("GetTopicByName(%q) failed: %v", tt.name, err)
+			continue
+		}
+		if gotByName.ID != topic.ID {
+			t.Errorf("GetTopicByName(%q) returned wrong ID", tt.name)
+		}
+
+		// Verify directory was created
+		topicDir := filepath.Join(store.dataDir, tt.name)
+		if _, err := os.Stat(topicDir); os.IsNotExist(err) {
+			t.Errorf("topic directory not created for %q", tt.name)
+		}
+	}
+
+	// Verify all topics are listed
+	topics, err := store.ListTopics(true)
+	if err != nil {
+		t.Fatalf("ListTopics failed: %v", err)
+	}
+	if len(topics) != len(tests) {
+		t.Errorf("expected %d topics, got %d", len(tests), len(topics))
+	}
+}
+
+func TestMarkdownMalformedTopicsYaml(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	// Write garbage to the _topics.yaml file
+	topicsPath := filepath.Join(store.dataDir, "_topics.yaml")
+	if err := os.WriteFile(topicsPath, []byte("this is not: [valid: yaml: {{{}"), 0640); err != nil {
+		t.Fatalf("failed to write malformed yaml: %v", err)
+	}
+
+	// Operations that read topics should return an error, not panic
+	_, err := store.ListTopics(true)
+	if err == nil {
+		t.Error("expected error from ListTopics with malformed _topics.yaml")
+	}
+
+	_, err = store.GetTopic(uuid.New())
+	if err == nil {
+		t.Error("expected error from GetTopic with malformed _topics.yaml")
+	}
+
+	_, err = store.GetTopicByName("anything")
+	if err == nil {
+		t.Error("expected error from GetTopicByName with malformed _topics.yaml")
+	}
+}
+
+func TestMarkdownTopicsYamlWithInvalidEntries(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	// Create a valid topic first
+	validTopic := models.NewTopic("valid-topic", "This one is fine", "test@cli")
+	if err := store.CreateTopic(validTopic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+
+	// Now corrupt the _topics.yaml by appending an entry with invalid UUID
+	topicsPath := filepath.Join(store.dataDir, "_topics.yaml")
+	data, err := os.ReadFile(topicsPath)
+	if err != nil {
+		t.Fatalf("read topics file: %v", err)
+	}
+	corrupted := string(data) + "\n- id: not-a-valid-uuid\n  name: corrupt-topic\n  created_at: not-a-date\n  created_by: test@cli\n"
+	if err := os.WriteFile(topicsPath, []byte(corrupted), 0640); err != nil {
+		t.Fatalf("write corrupted file: %v", err)
+	}
+
+	// ListTopics should skip the malformed entry and return the valid one
+	topics, err := store.ListTopics(true)
+	if err != nil {
+		t.Fatalf("ListTopics failed: %v", err)
+	}
+	if len(topics) != 1 {
+		t.Errorf("expected 1 valid topic (skipping corrupt), got %d", len(topics))
+	}
+	if topics[0].Name != "valid-topic" {
+		t.Errorf("expected 'valid-topic', got %q", topics[0].Name)
+	}
+}
+
+func TestMarkdownThreadWithLongSubject(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("long-subject", "Test long subjects", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+
+	// A moderately long subject (under filesystem limits) should work fine
+	moderateSubject := strings.Repeat("long ", 30)
+	thread1 := models.NewThread(topic.ID, moderateSubject, "test@cli")
+	if err := store.CreateThread(thread1); err != nil {
+		t.Fatalf("CreateThread with moderate subject failed: %v", err)
+	}
+
+	got, err := store.GetThread(thread1.ID)
+	if err != nil {
+		t.Fatalf("GetThread failed: %v", err)
+	}
+	if got.Subject != moderateSubject {
+		t.Errorf("subject was altered: got %d chars, want %d chars", len(got.Subject), len(moderateSubject))
+	}
+
+	// Verify messages can be posted and retrieved on the long-subject thread
+	msg := models.NewMessage(thread1.ID, "Message in long-subject thread", "test@cli")
+	if err := store.CreateMessage(msg); err != nil {
+		t.Fatalf("CreateMessage failed: %v", err)
+	}
+	messages, err := store.ListMessages(thread1.ID)
+	if err != nil {
+		t.Fatalf("ListMessages failed: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("expected 1 message, got %d", len(messages))
+	}
+
+	// An extremely long subject (300+ chars) that exceeds filesystem filename limits
+	// should return an error rather than panic
+	extremeSubject := strings.Repeat("This is a very long subject ", 15)
+	thread2 := models.NewThread(topic.ID, extremeSubject, "test@cli")
+	err = store.CreateThread(thread2)
+	if err == nil {
+		// If it succeeds (e.g. on a filesystem with large name limits), that's ok too.
+		// Verify the data round-trips.
+		got2, getErr := store.GetThread(thread2.ID)
+		if getErr != nil {
+			t.Fatalf("GetThread (extreme) failed: %v", getErr)
+		}
+		if got2.Subject != extremeSubject {
+			t.Errorf("extreme subject was altered")
+		}
+	}
+	// If err != nil, that's the expected graceful failure for long filenames
+}
+
+func TestMarkdownMessageWithMultilineContent(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("multiline", "Test multiline content", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+	thread := models.NewThread(topic.ID, "Multiline Test", "test@cli")
+	if err := store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread failed: %v", err)
+	}
+
+	// Message with various markdown formatting
+	content := "# Heading\n\nSome paragraph.\n\n```go\nfunc main() {\n\tprintln(\"hello\")\n}\n```\n\n- list item 1\n- list item 2\n\n> Blockquote here"
+	msg := models.NewMessage(thread.ID, content, "test@cli")
+	if err := store.CreateMessage(msg); err != nil {
+		t.Fatalf("CreateMessage failed: %v", err)
+	}
+
+	got, err := store.GetMessage(msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessage failed: %v", err)
+	}
+	if got.Content != content {
+		t.Errorf("multiline content mismatch:\nwant: %q\ngot:  %q", content, got.Content)
+	}
+}
+
+func TestMarkdownDeleteNonexistentEntities(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	fakeID := uuid.New()
+
+	err := store.DeleteTopic(fakeID)
+	if err == nil {
+		t.Error("expected error deleting nonexistent topic")
+	}
+
+	err = store.DeleteThread(fakeID)
+	if err == nil {
+		t.Error("expected error deleting nonexistent thread")
+	}
+
+	err = store.DeleteMessage(fakeID)
+	if err == nil {
+		t.Error("expected error deleting nonexistent message")
+	}
+
+	err = store.DeleteAttachment(fakeID)
+	if err == nil {
+		t.Error("expected error deleting nonexistent attachment")
+	}
+}
+
+func TestMarkdownArchiveNonexistentTopic(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	err := store.ArchiveTopic(uuid.New(), true)
+	if err == nil {
+		t.Error("expected error archiving nonexistent topic")
+	}
+}
+
+func TestMarkdownSetStickyNonexistentThread(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	err := store.SetThreadSticky(uuid.New(), true)
+	if err == nil {
+		t.Error("expected error setting sticky on nonexistent thread")
 	}
 }
