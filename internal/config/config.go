@@ -67,7 +67,7 @@ func (c *Config) OpenStorage() (storage.Storage, error) {
 		dbPath := filepath.Join(dataDir, "bbs.db")
 		return storage.NewSqliteStore(dbPath)
 	case "markdown":
-		return nil, fmt.Errorf("markdown backend not yet implemented")
+		return storage.NewMarkdownStore(dataDir)
 	default:
 		return nil, fmt.Errorf("unknown backend: %q", backend)
 	}

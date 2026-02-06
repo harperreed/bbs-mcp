@@ -405,19 +405,18 @@ func TestOpenStorageDefaultBackend(t *testing.T) {
 	defer store.Close()
 }
 
-func TestOpenStorageMarkdownBackendNotImplemented(t *testing.T) {
+func TestOpenStorageMarkdownBackend(t *testing.T) {
+	tmpDir := t.TempDir()
 	cfg := &Config{
 		Backend: "markdown",
-		DataDir: "/tmp/bbs-test",
+		DataDir: tmpDir,
 	}
 
-	_, err := cfg.OpenStorage()
-	if err == nil {
-		t.Fatal("expected error for markdown backend, got nil")
+	store, err := cfg.OpenStorage()
+	if err != nil {
+		t.Fatalf("OpenStorage failed for markdown backend: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("expected 'not yet implemented' error, got: %v", err)
-	}
+	defer store.Close()
 }
 
 func TestOpenStorageUnknownBackend(t *testing.T) {
