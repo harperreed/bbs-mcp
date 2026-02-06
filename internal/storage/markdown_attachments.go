@@ -8,66 +8,57 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
-	"gopkg.in/yaml.v3"
+	"github.com/harper/suite/mdstore"
 
 	"github.com/harper/bbs/internal/models"
 )
 
 // CreateAttachment stores a new attachment on disk.
 func (s *MarkdownStore) CreateAttachment(a *models.Attachment) error {
-	lock, err := s.lockFile()
-	if err != nil {
-		return err
-	}
-	defer unlockFile(lock)
+	return mdstore.WithLock(s.dataDir, func() error {
+		// Find the thread that contains this message to determine topic name
+		topicName, err := s.topicNameForMessage(a.MessageID)
+		if err != nil {
+			return fmt.Errorf("find topic for message: %w", err)
+		}
 
-	// Find the thread that contains this message to determine topic name
-	topicName, err := s.topicNameForMessage(a.MessageID)
-	if err != nil {
-		return fmt.Errorf("find topic for message: %w", err)
-	}
+		msgPrefix := a.MessageID.String()[:8]
+		attDir := s.attachmentDirPath(topicName, msgPrefix)
+		if err := mdstore.EnsureDir(attDir); err != nil {
+			return fmt.Errorf("create attachment directory: %w", err)
+		}
 
-	msgPrefix := a.MessageID.String()[:8]
-	attDir := s.attachmentDirPath(topicName, msgPrefix)
-	if err := os.MkdirAll(attDir, 0750); err != nil {
-		return fmt.Errorf("create attachment directory: %w", err)
-	}
+		// Resolve filename, handling collisions by prefixing with attachment ID
+		storedFilename := a.Filename
+		dataPath := filepath.Join(attDir, storedFilename)
+		if _, err := os.Stat(dataPath); err == nil {
+			// File already exists, make unique by prefixing with attachment ID
+			storedFilename = a.ID.String()[:8] + "-" + a.Filename
+			dataPath = filepath.Join(attDir, storedFilename)
+		}
 
-	// Resolve filename, handling collisions by prefixing with attachment ID
-	storedFilename := a.Filename
-	dataPath := filepath.Join(attDir, storedFilename)
-	if _, err := os.Stat(dataPath); err == nil {
-		// File already exists, make unique by prefixing with attachment ID
-		storedFilename = a.ID.String()[:8] + "-" + a.Filename
-		dataPath = filepath.Join(attDir, storedFilename)
-	}
+		// Write attachment data file
+		if err := mdstore.AtomicWrite(dataPath, a.Data); err != nil {
+			return fmt.Errorf("write attachment data: %w", err)
+		}
 
-	// Write attachment data file
-	if err := atomicWrite(dataPath, a.Data); err != nil {
-		return fmt.Errorf("write attachment data: %w", err)
-	}
+		// Write metadata file (store the resolved filename)
+		meta := attachmentMeta{
+			ID:        a.ID.String(),
+			MessageID: a.MessageID.String(),
+			Filename:  storedFilename,
+			MimeType:  a.MimeType,
+			CreatedAt: mdstore.FormatTime(a.CreatedAt.UTC()),
+		}
+		metaPath := filepath.Join(attDir, storedFilename+".meta.yaml")
+		if err := mdstore.WriteYAML(metaPath, &meta); err != nil {
+			return fmt.Errorf("write attachment metadata: %w", err)
+		}
 
-	// Write metadata file (store the resolved filename)
-	meta := attachmentMeta{
-		ID:        a.ID.String(),
-		MessageID: a.MessageID.String(),
-		Filename:  storedFilename,
-		MimeType:  a.MimeType,
-		CreatedAt: a.CreatedAt.UTC().Format(time.RFC3339Nano),
-	}
-	metaPath := filepath.Join(attDir, storedFilename+".meta.yaml")
-	metaData, err := yaml.Marshal(&meta)
-	if err != nil {
-		return fmt.Errorf("marshal attachment metadata: %w", err)
-	}
-	if err := atomicWrite(metaPath, metaData); err != nil {
-		return fmt.Errorf("write attachment metadata: %w", err)
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // GetAttachment retrieves an attachment by ID.
@@ -124,24 +115,20 @@ func (s *MarkdownStore) ListAttachments(messageID uuid.UUID) ([]*models.Attachme
 
 // DeleteAttachment deletes an attachment from disk.
 func (s *MarkdownStore) DeleteAttachment(id uuid.UUID) error {
-	lock, err := s.lockFile()
-	if err != nil {
-		return err
-	}
-	defer unlockFile(lock)
-
-	entries, err := s.readTopics()
-	if err != nil {
-		return err
-	}
-
-	for _, e := range entries {
-		if err := s.deleteAttachmentInTopic(e.Name, id); err == nil {
-			return nil
+	return mdstore.WithLock(s.dataDir, func() error {
+		entries, err := s.readTopics()
+		if err != nil {
+			return err
 		}
-	}
 
-	return fmt.Errorf("attachment not found: %s", id)
+		for _, e := range entries {
+			if err := s.deleteAttachmentInTopic(e.Name, id); err == nil {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("attachment not found: %s", id)
+	})
 }
 
 // topicNameForMessage finds the topic name that contains a given message.
@@ -268,7 +255,7 @@ func (s *MarkdownStore) readAttachmentFromMeta(metaPath, dir string) (*models.At
 	if err != nil {
 		return nil, fmt.Errorf("parse attachment message ID %q: %w", meta.MessageID, err)
 	}
-	createdAt, err := parseTimestamp(meta.CreatedAt)
+	createdAt, err := mdstore.ParseTime(meta.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("parse attachment created_at %q: %w", meta.CreatedAt, err)
 	}
@@ -292,14 +279,13 @@ func (s *MarkdownStore) readAttachmentFromMeta(metaPath, dir string) (*models.At
 
 // readAttachmentMeta reads an attachment metadata YAML file.
 func readAttachmentMeta(path string) (*attachmentMeta, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	var meta attachmentMeta
+	if err := mdstore.ReadYAML(path, &meta); err != nil {
 		return nil, err
 	}
-
-	var meta attachmentMeta
-	if err := yaml.Unmarshal(data, &meta); err != nil {
-		return nil, err
+	// ReadYAML returns nil for missing files, but we need an error for missing metadata
+	if meta.ID == "" {
+		return nil, fmt.Errorf("attachment metadata not found or empty: %s", path)
 	}
 	return &meta, nil
 }

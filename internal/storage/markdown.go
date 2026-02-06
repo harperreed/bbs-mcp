@@ -1,20 +1,18 @@
 // ABOUTME: Core MarkdownStore struct and helpers for file-based BBS storage
-// ABOUTME: Provides constructor, atomic writes, slug generation, and frontmatter parsing
+// ABOUTME: Provides constructor, slug generation, and frontmatter parsing via mdstore library
 
 package storage
 
 import (
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/harper/suite/mdstore"
 	"gopkg.in/yaml.v3"
 
 	"github.com/harper/bbs/internal/models"
@@ -30,7 +28,7 @@ var _ Storage = (*MarkdownStore)(nil)
 
 // NewMarkdownStore creates a new markdown-backed store rooted at dataDir.
 func NewMarkdownStore(dataDir string) (*MarkdownStore, error) {
-	if err := os.MkdirAll(dataDir, 0750); err != nil {
+	if err := mdstore.EnsureDir(dataDir); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 	return &MarkdownStore{dataDir: dataDir}, nil
@@ -81,73 +79,10 @@ func (s *MarkdownStore) attachmentDirPath(topicName string, msgIDPrefix string) 
 	return filepath.Join(s.topicDirPath(topicName), "_attachments", msgIDPrefix)
 }
 
-// atomicWrite writes data to a file atomically by writing to a temp file then renaming.
-// Files are created with 0640 permissions (owner rw, group r).
-func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return fmt.Errorf("create directory: %w", err)
-	}
-
-	suffix, err := randomSuffix()
-	if err != nil {
-		return fmt.Errorf("generate temp suffix: %w", err)
-	}
-	tmpPath := path + ".tmp." + suffix
-
-	if err := os.WriteFile(tmpPath, data, 0640); err != nil {
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename temp file: %w", err)
-	}
-	return nil
-}
-
-// randomSuffix generates a short random string for temp file names.
-func randomSuffix() (string, error) {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	result := make([]byte, 8)
-	for i := range result {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
-		if err != nil {
-			return "", err
-		}
-		result[i] = chars[n.Int64()]
-	}
-	return string(result), nil
-}
-
-// slugify converts a string to a URL-friendly slug.
-func slugify(s string) string {
-	// Convert to lowercase
-	s = strings.ToLower(s)
-
-	// Replace non-alphanumeric chars with hyphens
-	var result []rune
-	prevHyphen := false
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			result = append(result, r)
-			prevHyphen = false
-		} else if !prevHyphen && len(result) > 0 {
-			result = append(result, '-')
-			prevHyphen = true
-		}
-	}
-
-	slug := strings.TrimRight(string(result), "-")
-	if slug == "" {
-		slug = "thread"
-	}
-	return slug
-}
-
 // threadFileName generates a unique filename for a thread.
 // Uses slugified subject, adding UUID suffix on collision.
 func (s *MarkdownStore) threadFileName(topicName, subject string, threadID uuid.UUID) string {
-	slug := slugify(subject)
+	slug := mdstore.Slugify(subject)
 	base := slug + ".md"
 	topicDir := s.topicDirPath(topicName)
 
@@ -196,23 +131,13 @@ func readThreadFrontmatter(path string) (*threadFrontmatter, error) {
 
 // parseThreadFrontmatter extracts the YAML frontmatter from markdown content.
 func parseThreadFrontmatter(content string) (*threadFrontmatter, error) {
-	// Frontmatter is between the first two "---" lines
-	if !strings.HasPrefix(content, "---\n") {
+	yamlStr, _ := mdstore.ParseFrontmatter(content)
+	if yamlStr == "" {
 		return nil, fmt.Errorf("no frontmatter found")
 	}
 
-	end := strings.Index(content[4:], "\n---\n")
-	if end == -1 {
-		// Try with just "---" at end of file
-		end = strings.Index(content[4:], "\n---")
-		if end == -1 {
-			return nil, fmt.Errorf("frontmatter not terminated")
-		}
-	}
-
-	yamlContent := content[4 : 4+end]
 	var fm threadFrontmatter
-	if err := yaml.Unmarshal([]byte(yamlContent), &fm); err != nil {
+	if err := yaml.Unmarshal([]byte(yamlStr), &fm); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
 	return &fm, nil
@@ -285,7 +210,7 @@ func parseMessageHeader(line string) (author string, createdAt time.Time, ok boo
 	if matches == nil {
 		return "", time.Time{}, false
 	}
-	t, err := parseTimestamp(matches[2])
+	t, err := mdstore.ParseTime(matches[2])
 	if err != nil {
 		return "", time.Time{}, false
 	}
@@ -311,7 +236,7 @@ func parseEditedAt(line string) (*time.Time, bool) {
 	if matches == nil {
 		return nil, false
 	}
-	t, err := parseTimestamp(matches[1])
+	t, err := mdstore.ParseTime(matches[1])
 	if err != nil {
 		return nil, false
 	}
@@ -375,43 +300,39 @@ func parseMessageSection(section string) (*parsedMessage, error) {
 
 // renderThread renders a complete thread file (frontmatter + messages).
 func renderThread(thread *models.Thread, topicName string, messages []*parsedMessage) string {
-	var b strings.Builder
-
-	// Frontmatter
-	b.WriteString("---\n")
 	fm := threadFrontmatter{
 		ID:        thread.ID.String(),
 		Topic:     topicName,
 		Subject:   thread.Subject,
-		CreatedAt: thread.CreatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt: mdstore.FormatTime(thread.CreatedAt.UTC()),
 		CreatedBy: thread.CreatedBy,
 		Sticky:    thread.Sticky,
 	}
-	fmData, _ := yaml.Marshal(&fm)
-	b.Write(fmData)
-	b.WriteString("---\n")
 
-	// Messages
+	// Build the message body
+	var body strings.Builder
 	for i, msg := range messages {
 		if i > 0 {
-			b.WriteString("\n---\n")
+			body.WriteString("\n---\n")
 		}
-		b.WriteString("\n")
-		b.WriteString(renderMessage(msg))
+		body.WriteString("\n")
+		body.WriteString(renderMessage(msg))
 	}
 
-	return b.String()
+	// Use mdstore.RenderFrontmatter for the frontmatter section
+	content, _ := mdstore.RenderFrontmatter(&fm, body.String())
+	return content
 }
 
 // renderMessage renders a single message section.
 func renderMessage(msg *parsedMessage) string {
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("## %s — %s\n", msg.CreatedBy, msg.CreatedAt.UTC().Format(time.RFC3339Nano)))
+	b.WriteString(fmt.Sprintf("## %s — %s\n", msg.CreatedBy, mdstore.FormatTime(msg.CreatedAt.UTC())))
 	b.WriteString(fmt.Sprintf("<!-- msg:%s -->\n", msg.ID.String()))
 
 	if msg.EditedAt != nil {
-		b.WriteString(fmt.Sprintf("<!-- edited:%s -->\n", msg.EditedAt.UTC().Format(time.RFC3339Nano)))
+		b.WriteString(fmt.Sprintf("<!-- edited:%s -->\n", mdstore.FormatTime(msg.EditedAt.UTC())))
 	}
 
 	b.WriteString("\n")
@@ -438,12 +359,9 @@ func (e *topicEntry) toModel() (*models.Topic, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse topic ID %q: %w", e.ID, err)
 	}
-	createdAt, err := time.Parse(time.RFC3339Nano, e.CreatedAt)
+	createdAt, err := mdstore.ParseTime(e.CreatedAt)
 	if err != nil {
-		createdAt, err = time.Parse(time.RFC3339, e.CreatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse topic created_at %q: %w", e.CreatedAt, err)
-		}
+		return nil, fmt.Errorf("parse topic created_at %q: %w", e.CreatedAt, err)
 	}
 	return &models.Topic{
 		ID:          id,
@@ -461,7 +379,7 @@ func fromTopicModel(t *models.Topic) topicEntry {
 		ID:          t.ID.String(),
 		Name:        t.Name,
 		Description: t.Description,
-		CreatedAt:   t.CreatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:   mdstore.FormatTime(t.CreatedAt.UTC()),
 		CreatedBy:   t.CreatedBy,
 		Archived:    t.Archived,
 	}
@@ -469,37 +387,16 @@ func fromTopicModel(t *models.Topic) topicEntry {
 
 // readTopics reads the _topics.yaml file.
 func (s *MarkdownStore) readTopics() ([]topicEntry, error) {
-	data, err := os.ReadFile(s.topicsFilePath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read topics file: %w", err)
-	}
-
 	var entries []topicEntry
-	if err := yaml.Unmarshal(data, &entries); err != nil {
-		return nil, fmt.Errorf("parse topics file: %w", err)
+	if err := mdstore.ReadYAML(s.topicsFilePath(), &entries); err != nil {
+		return nil, fmt.Errorf("read topics file: %w", err)
 	}
 	return entries, nil
 }
 
 // writeTopics writes the _topics.yaml file atomically.
 func (s *MarkdownStore) writeTopics(entries []topicEntry) error {
-	data, err := yaml.Marshal(entries)
-	if err != nil {
-		return fmt.Errorf("marshal topics: %w", err)
-	}
-	return atomicWrite(s.topicsFilePath(), data)
-}
-
-// parseTimestamp parses a timestamp string trying RFC3339Nano first, then RFC3339.
-func parseTimestamp(s string) (time.Time, error) {
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		t, err = time.Parse(time.RFC3339, s)
-	}
-	return t, err
+	return mdstore.WriteYAML(s.topicsFilePath(), entries)
 }
 
 // attachmentMeta holds metadata for an attachment stored alongside the file.

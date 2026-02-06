@@ -11,68 +11,65 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/harper/suite/mdstore"
 
 	"github.com/harper/bbs/internal/models"
 )
 
 // CreateMessage stores a new message by appending to the thread's markdown file.
 func (s *MarkdownStore) CreateMessage(m *models.Message) error {
-	lock, err := s.lockFile()
-	if err != nil {
-		return err
-	}
-	defer unlockFile(lock)
+	return mdstore.WithLock(s.dataDir, func() error {
+		// Find the thread file
+		threadFP, topicName, err := s.findThreadFile(m.ThreadID)
+		if err != nil {
+			return fmt.Errorf("find thread for message: %w", err)
+		}
 
-	// Find the thread file
-	threadFP, topicName, err := s.findThreadFile(m.ThreadID)
-	if err != nil {
-		return fmt.Errorf("find thread for message: %w", err)
-	}
+		// Read existing file
+		data, err := os.ReadFile(threadFP)
+		if err != nil {
+			return fmt.Errorf("read thread file: %w", err)
+		}
 
-	// Read existing file
-	data, err := os.ReadFile(threadFP)
-	if err != nil {
-		return fmt.Errorf("read thread file: %w", err)
-	}
+		// Parse existing messages
+		existingMessages := parseThreadMessages(string(data))
 
-	// Parse existing messages
-	existingMessages := parseThreadMessages(string(data))
+		// Add new message
+		newMsg := &parsedMessage{
+			ID:        m.ID,
+			CreatedBy: m.CreatedBy,
+			CreatedAt: m.CreatedAt,
+			EditedAt:  m.EditedAt,
+			Content:   m.Content,
+		}
+		existingMessages = append(existingMessages, newMsg)
 
-	// Add new message
-	newMsg := &parsedMessage{
-		ID:        m.ID,
-		CreatedBy: m.CreatedBy,
-		CreatedAt: m.CreatedAt,
-		EditedAt:  m.EditedAt,
-		Content:   m.Content,
-	}
-	existingMessages = append(existingMessages, newMsg)
+		// Rebuild thread with updated_at from latest message
+		fm, err := readThreadFrontmatter(threadFP)
+		if err != nil {
+			return fmt.Errorf("read frontmatter: %w", err)
+		}
 
-	// Rebuild thread with updated_at from latest message
-	fm, err := readThreadFrontmatter(threadFP)
-	if err != nil {
-		return fmt.Errorf("read frontmatter: %w", err)
-	}
+		createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
+		topicID, _ := s.topicIDByName(topicName)
 
-	createdAt, _ := parseTimestamp(fm.CreatedAt)
-	topicID, _ := s.topicIDByName(topicName)
+		thread := &models.Thread{
+			ID:        m.ThreadID,
+			TopicID:   topicID,
+			Subject:   fm.Subject,
+			CreatedAt: createdAt,
+			CreatedBy: fm.CreatedBy,
+			UpdatedAt: m.CreatedAt,
+			Sticky:    fm.Sticky,
+		}
 
-	thread := &models.Thread{
-		ID:        m.ThreadID,
-		TopicID:   topicID,
-		Subject:   fm.Subject,
-		CreatedAt: createdAt,
-		CreatedBy: fm.CreatedBy,
-		UpdatedAt: m.CreatedAt,
-		Sticky:    fm.Sticky,
-	}
+		content := renderThread(thread, topicName, existingMessages)
+		if err := mdstore.AtomicWrite(threadFP, []byte(content)); err != nil {
+			return fmt.Errorf("write thread file: %w", err)
+		}
 
-	content := renderThread(thread, topicName, existingMessages)
-	if err := atomicWrite(threadFP, []byte(content)); err != nil {
-		return fmt.Errorf("write thread file: %w", err)
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // GetMessage retrieves a message by ID.
@@ -164,101 +161,93 @@ func (s *MarkdownStore) ListMessages(threadID uuid.UUID) ([]*models.Message, err
 
 // UpdateMessage updates an existing message in its thread file.
 func (s *MarkdownStore) UpdateMessage(m *models.Message) error {
-	lock, err := s.lockFile()
-	if err != nil {
-		return err
-	}
-	defer unlockFile(lock)
-
-	threadFP, topicName, err := s.findThreadFile(m.ThreadID)
-	if err != nil {
-		return fmt.Errorf("find thread: %w", err)
-	}
-
-	data, err := os.ReadFile(threadFP)
-	if err != nil {
-		return fmt.Errorf("read thread file: %w", err)
-	}
-
-	messages := parseThreadMessages(string(data))
-
-	// Find and update the message
-	found := false
-	for i, msg := range messages {
-		if msg.ID == m.ID {
-			messages[i].Content = m.Content
-			messages[i].EditedAt = m.EditedAt
-			found = true
-			break
+	return mdstore.WithLock(s.dataDir, func() error {
+		threadFP, topicName, err := s.findThreadFile(m.ThreadID)
+		if err != nil {
+			return fmt.Errorf("find thread: %w", err)
 		}
-	}
-	if !found {
-		return fmt.Errorf("message not found: %s", m.ID)
-	}
 
-	// Rebuild thread file
-	fm, err := readThreadFrontmatter(threadFP)
-	if err != nil {
-		return fmt.Errorf("read frontmatter: %w", err)
-	}
-	createdAt, _ := parseTimestamp(fm.CreatedAt)
-	topicID, _ := s.topicIDByName(topicName)
-
-	// Compute updated_at from latest message
-	updatedAt := createdAt
-	for _, msg := range messages {
-		if msg.CreatedAt.After(updatedAt) {
-			updatedAt = msg.CreatedAt
+		data, err := os.ReadFile(threadFP)
+		if err != nil {
+			return fmt.Errorf("read thread file: %w", err)
 		}
-	}
 
-	thread := &models.Thread{
-		ID:        m.ThreadID,
-		TopicID:   topicID,
-		Subject:   fm.Subject,
-		CreatedAt: createdAt,
-		CreatedBy: fm.CreatedBy,
-		UpdatedAt: updatedAt,
-		Sticky:    fm.Sticky,
-	}
+		messages := parseThreadMessages(string(data))
 
-	content := renderThread(thread, topicName, messages)
-	return atomicWrite(threadFP, []byte(content))
+		// Find and update the message
+		found := false
+		for i, msg := range messages {
+			if msg.ID == m.ID {
+				messages[i].Content = m.Content
+				messages[i].EditedAt = m.EditedAt
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("message not found: %s", m.ID)
+		}
+
+		// Rebuild thread file
+		fm, err := readThreadFrontmatter(threadFP)
+		if err != nil {
+			return fmt.Errorf("read frontmatter: %w", err)
+		}
+		createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
+		topicID, _ := s.topicIDByName(topicName)
+
+		// Compute updated_at from latest message
+		updatedAt := createdAt
+		for _, msg := range messages {
+			if msg.CreatedAt.After(updatedAt) {
+				updatedAt = msg.CreatedAt
+			}
+		}
+
+		thread := &models.Thread{
+			ID:        m.ThreadID,
+			TopicID:   topicID,
+			Subject:   fm.Subject,
+			CreatedAt: createdAt,
+			CreatedBy: fm.CreatedBy,
+			UpdatedAt: updatedAt,
+			Sticky:    fm.Sticky,
+		}
+
+		content := renderThread(thread, topicName, messages)
+		return mdstore.AtomicWrite(threadFP, []byte(content))
+	})
 }
 
 // DeleteMessage deletes a message from its thread file.
 func (s *MarkdownStore) DeleteMessage(id uuid.UUID) error {
-	lock, err := s.lockFile()
-	if err != nil {
-		return err
-	}
-	defer unlockFile(lock)
-
-	// Find the message across all threads
-	entries, err := s.readTopics()
-	if err != nil {
-		return err
-	}
-
-	for _, e := range entries {
-		topicDir := s.topicDirPath(e.Name)
-		dirEntries, err := os.ReadDir(topicDir)
+	return mdstore.WithLock(s.dataDir, func() error {
+		// Find the message across all threads
+		entries, err := s.readTopics()
 		if err != nil {
-			continue
+			return err
 		}
 
-		for _, de := range dirEntries {
-			if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
+		for _, e := range entries {
+			topicDir := s.topicDirPath(e.Name)
+			dirEntries, err := os.ReadDir(topicDir)
+			if err != nil {
 				continue
 			}
-			fp := filepath.Join(topicDir, de.Name())
-			if err := s.deleteMessageFromFile(fp, id, e.Name); err == nil {
-				return nil
+
+			for _, de := range dirEntries {
+				if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
+					continue
+				}
+				fp := filepath.Join(topicDir, de.Name())
+				if err := s.deleteMessageFromFile(fp, id, e.Name); err == nil {
+					return nil
+				}
 			}
 		}
-	}
 
-	return fmt.Errorf("message not found: %s", id)
+		return fmt.Errorf("message not found: %s", id)
+	})
 }
 
 // deleteMessageFromFile removes a message from a specific thread file.
@@ -300,7 +289,7 @@ func (s *MarkdownStore) deleteMessageFromFile(fp string, msgID uuid.UUID, topicN
 	}
 
 	// Rebuild thread file
-	createdAt, _ := parseTimestamp(fm.CreatedAt)
+	createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
 	topicID, _ := s.topicIDByName(topicName)
 
 	updatedAt := createdAt
@@ -321,7 +310,7 @@ func (s *MarkdownStore) deleteMessageFromFile(fp string, msgID uuid.UUID, topicN
 	}
 
 	content := renderThread(thread, topicName, newMessages)
-	return atomicWrite(fp, []byte(content))
+	return mdstore.AtomicWrite(fp, []byte(content))
 }
 
 // findThreadFile locates the file path and topic name for a given thread ID.

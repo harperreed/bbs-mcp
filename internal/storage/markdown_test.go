@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/harper/suite/mdstore"
+
 	"github.com/harper/bbs/internal/models"
 )
 
@@ -768,16 +770,16 @@ func TestMarkdownSlugify(t *testing.T) {
 		{"BBS Health Check", "bbs-health-check"},
 		{"  multiple   spaces  ", "multiple-spaces"},
 		{"Special! @chars# $here", "special-chars-here"},
-		{"", "thread"},
+		{"", "untitled"},
 		{"ALLCAPS", "allcaps"},
 		{"with-existing-hyphens", "with-existing-hyphens"},
 		{"123-numbers", "123-numbers"},
 	}
 
 	for _, tt := range tests {
-		got := slugify(tt.input)
+		got := mdstore.Slugify(tt.input)
 		if got != tt.expected {
-			t.Errorf("slugify(%q) = %q, want %q", tt.input, got, tt.expected)
+			t.Errorf("Slugify(%q) = %q, want %q", tt.input, got, tt.expected)
 		}
 	}
 }
