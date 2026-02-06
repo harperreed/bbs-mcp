@@ -16,7 +16,7 @@ import (
 var identityFlag string
 
 // globalStore holds the database connection for CLI commands
-var globalStore *storage.Store
+var globalStore storage.Storage
 
 var rootCmd = &cobra.Command{
 	Use:   "bbs",
@@ -37,7 +37,7 @@ Topics → Threads → Messages
 Data is stored locally in SQLite.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Launch TUI if no subcommand
-		store, err := storage.NewStore(storage.DefaultDBPath())
+		store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 		if err != nil {
 			return fmt.Errorf("failed to open database: %w", err)
 		}
@@ -52,7 +52,7 @@ Data is stored locally in SQLite.`,
 
 		// Initialize global store for subcommands that need it
 		// Note: Commands that use globalStore should handle nil check
-		store, err := storage.NewStore(storage.DefaultDBPath())
+		store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 		if err != nil {
 			return fmt.Errorf("failed to open database: %w", err)
 		}

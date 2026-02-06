@@ -18,13 +18,13 @@ type ThreadsLoadedMsg struct {
 }
 
 type ThreadsModel struct {
-	store   *storage.Store
+	store   storage.Storage
 	threads []*models.Thread
 	cursor  int
 	topicID uuid.UUID
 }
 
-func NewThreadsModel(store *storage.Store) ThreadsModel {
+func NewThreadsModel(store storage.Storage) ThreadsModel {
 	return ThreadsModel{store: store, cursor: 0}
 }
 

@@ -20,7 +20,7 @@ const (
 
 // Model is the main application state
 type Model struct {
-	store       *storage.Store
+	store       storage.Storage
 	identity    string
 	activePane  Pane
 	width       int
@@ -34,7 +34,7 @@ type Model struct {
 }
 
 // NewModel creates a new TUI model
-func NewModel(store *storage.Store, identity string) Model {
+func NewModel(store storage.Storage, identity string) Model {
 	return Model{
 		store:      store,
 		identity:   identity,
@@ -223,7 +223,7 @@ func (m Model) View() string {
 }
 
 // Run starts the TUI
-func Run(store *storage.Store, identity string) error {
+func Run(store storage.Storage, identity string) error {
 	p := tea.NewProgram(NewModel(store, identity), tea.WithAltScreen())
 	_, err := p.Run()
 	return err

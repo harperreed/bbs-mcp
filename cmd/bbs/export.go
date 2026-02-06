@@ -78,10 +78,10 @@ func init() {
 
 // Export data structures
 type ExportData struct {
-	Version    string         `json:"version" yaml:"version"`
-	ExportedAt time.Time      `json:"exported_at" yaml:"exported_at"`
-	Tool       string         `json:"tool" yaml:"tool"`
-	Topics     []ExportTopic  `json:"topics" yaml:"topics"`
+	Version    string        `json:"version" yaml:"version"`
+	ExportedAt time.Time     `json:"exported_at" yaml:"exported_at"`
+	Tool       string        `json:"tool" yaml:"tool"`
+	Topics     []ExportTopic `json:"topics" yaml:"topics"`
 }
 
 type ExportTopic struct {
@@ -105,11 +105,11 @@ type ExportThread struct {
 }
 
 type ExportMessage struct {
-	ID        string               `json:"id" yaml:"id"`
-	Content   string               `json:"content" yaml:"content"`
-	CreatedAt time.Time            `json:"created_at" yaml:"created_at"`
-	CreatedBy string               `json:"created_by" yaml:"created_by"`
-	EditedAt  *time.Time           `json:"edited_at,omitempty" yaml:"edited_at,omitempty"`
+	ID          string             `json:"id" yaml:"id"`
+	Content     string             `json:"content" yaml:"content"`
+	CreatedAt   time.Time          `json:"created_at" yaml:"created_at"`
+	CreatedBy   string             `json:"created_by" yaml:"created_by"`
+	EditedAt    *time.Time         `json:"edited_at,omitempty" yaml:"edited_at,omitempty"`
 	Attachments []ExportAttachment `json:"attachments,omitempty" yaml:"attachments,omitempty"`
 }
 
@@ -122,7 +122,7 @@ type ExportAttachment struct {
 	Data []byte `json:"data" yaml:"data"`
 }
 
-func buildExportData(store *storage.Store) (*ExportData, error) {
+func buildExportData(store storage.Storage) (*ExportData, error) {
 	topics, err := store.ListTopics(true)
 	if err != nil {
 		return nil, fmt.Errorf("list topics: %w", err)
@@ -206,7 +206,7 @@ func buildExportData(store *storage.Store) (*ExportData, error) {
 }
 
 func runExportMarkdown(cmd *cobra.Command, args []string) error {
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -262,7 +262,7 @@ func runExportMarkdown(cmd *cobra.Command, args []string) error {
 }
 
 func runExportYAML(cmd *cobra.Command, args []string) error {
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -282,7 +282,7 @@ func runExportYAML(cmd *cobra.Command, args []string) error {
 }
 
 func runExportJSON(cmd *cobra.Command, args []string) error {
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -337,7 +337,7 @@ func runImportYAML(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid export file: tool is %q, expected %q", exportData.Tool, "bbs")
 	}
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}

@@ -15,13 +15,13 @@ import (
 )
 
 // Test helper to set up a test environment with a fresh database
-func setupTestEnv(t *testing.T) (*storage.Store, func()) {
+func setupTestEnv(t *testing.T) (*storage.SqliteStore, func()) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	store, err := storage.NewStore(dbPath)
+	store, err := storage.NewSqliteStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}
@@ -1505,7 +1505,7 @@ func TestRunExportMarkdown(t *testing.T) {
 	defer cleanup()
 
 	// Create test data using DefaultDBPath (which now points to temp dir)
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1559,7 +1559,7 @@ func TestRunExportMarkdownToStdout(t *testing.T) {
 	defer cleanup()
 
 	// Create minimal test data
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1576,7 +1576,7 @@ func TestRunExportMarkdownWithArchivedTopic(t *testing.T) {
 	cleanup := setupXDGTestEnv(t)
 	defer cleanup()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1608,7 +1608,7 @@ func TestRunExportYAML(t *testing.T) {
 	defer cleanup()
 
 	// Create test data
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1647,7 +1647,7 @@ func TestRunExportYAMLToStdout(t *testing.T) {
 	cleanup := setupXDGTestEnv(t)
 	defer cleanup()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1664,7 +1664,7 @@ func TestRunExportJSON(t *testing.T) {
 	defer cleanup()
 
 	// Create test data
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1699,7 +1699,7 @@ func TestRunExportJSONToStdout(t *testing.T) {
 	cleanup := setupXDGTestEnv(t)
 	defer cleanup()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1751,7 +1751,7 @@ topics:
 	}
 
 	// Verify data was imported
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
@@ -1811,7 +1811,7 @@ func TestRunImportYAMLDuplicateTopic(t *testing.T) {
 	defer cleanup()
 
 	// First, create a topic
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -1999,7 +1999,7 @@ func TestRunExportYAMLMarshalError(t *testing.T) {
 	defer cleanup()
 
 	// Create test data
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -2026,7 +2026,7 @@ func TestRunExportJSONMarshalError(t *testing.T) {
 	cleanup := setupXDGTestEnv(t)
 	defer cleanup()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -2052,7 +2052,7 @@ func TestRunExportMarkdownToDirectory(t *testing.T) {
 	cleanup := setupXDGTestEnv(t)
 	defer cleanup()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -2155,7 +2155,7 @@ topics:
 	}
 
 	// Verify both topics were imported
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
@@ -2346,7 +2346,7 @@ func TestRunExportYAMLWithDescriptionAndAttachments(t *testing.T) {
 	cleanup := setupXDGTestEnv(t)
 	defer cleanup()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -2382,7 +2382,7 @@ func TestRunExportJSONWithAllFields(t *testing.T) {
 	cleanup := setupXDGTestEnv(t)
 	defer cleanup()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}

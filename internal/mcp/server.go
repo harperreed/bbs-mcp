@@ -15,11 +15,11 @@ import (
 // Server wraps MCP server with storage.
 type Server struct {
 	mcp   *mcp.Server
-	store *storage.Store
+	store storage.Storage
 }
 
 // NewServer creates MCP server with all capabilities.
-func NewServer(store *storage.Store) (*Server, error) {
+func NewServer(store storage.Storage) (*Server, error) {
 	if store == nil {
 		return nil, fmt.Errorf("storage is required")
 	}

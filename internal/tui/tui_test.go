@@ -1337,11 +1337,11 @@ func TestMessagesModelSetMessagesEmpty(t *testing.T) {
 }
 
 // Helper to create a test store
-func newTestStore(t *testing.T) *storage.Store {
+func newTestStore(t *testing.T) *storage.SqliteStore {
 	t.Helper()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := storage.NewStore(dbPath)
+	store, err := storage.NewSqliteStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}

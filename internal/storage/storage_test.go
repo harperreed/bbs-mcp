@@ -14,18 +14,18 @@ import (
 	"github.com/harper/bbs/internal/models"
 )
 
-func TestNewStore(t *testing.T) {
+func TestNewSqliteStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	store, err := NewStore(dbPath)
+	store, err := NewSqliteStore(dbPath)
 	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
+		t.Fatalf("NewSqliteStore failed: %v", err)
 	}
 	defer store.Close()
 
 	if store == nil {
-		t.Fatal("NewStore returned nil")
+		t.Fatal("NewSqliteStore returned nil")
 	}
 
 	// Verify database file exists
@@ -796,11 +796,11 @@ func TestGetNotFound(t *testing.T) {
 }
 
 // Helper to create a test store
-func newTestStore(t *testing.T) *Store {
+func newTestStore(t *testing.T) *SqliteStore {
 	t.Helper()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := NewStore(dbPath)
+	store, err := NewSqliteStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}

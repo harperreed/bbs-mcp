@@ -19,14 +19,14 @@ type MessagesLoadedMsg struct {
 }
 
 type MessagesModel struct {
-	store    *storage.Store
+	store    storage.Storage
 	messages []*models.Message
 	cursor   int
 	scroll   int
 	threadID uuid.UUID
 }
 
-func NewMessagesModel(store *storage.Store) MessagesModel {
+func NewMessagesModel(store storage.Storage) MessagesModel {
 	return MessagesModel{store: store, cursor: 0, scroll: 0}
 }
 

@@ -34,7 +34,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := storage.NewStore(storage.DefaultDBPath())
+	store, err := storage.NewSqliteStore(storage.DefaultDBPath())
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}

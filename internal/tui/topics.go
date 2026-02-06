@@ -17,13 +17,13 @@ type TopicsLoadedMsg struct {
 }
 
 type TopicsModel struct {
-	store    *storage.Store
+	store    storage.Storage
 	topics   []*models.Topic
 	cursor   int
 	selected int
 }
 
-func NewTopicsModel(store *storage.Store) TopicsModel {
+func NewTopicsModel(store storage.Storage) TopicsModel {
 	return TopicsModel{store: store, cursor: 0, selected: -1}
 }
 

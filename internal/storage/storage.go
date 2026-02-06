@@ -17,10 +17,13 @@ import (
 	"github.com/harper/bbs/internal/models"
 )
 
-// Store provides SQLite-backed storage for BBS data.
-type Store struct {
+// SqliteStore provides SQLite-backed storage for BBS data.
+type SqliteStore struct {
 	db *sql.DB
 }
+
+// Compile-time check that SqliteStore implements Storage.
+var _ Storage = (*SqliteStore)(nil)
 
 // schema defines the database schema
 const schema = `
@@ -67,8 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_message_id ON attachments(message_id);
 `
 
-// NewStore creates a new SQLite-backed store.
-func NewStore(dbPath string) (*Store, error) {
+// NewSqliteStore creates a new SQLite-backed store.
+func NewSqliteStore(dbPath string) (*SqliteStore, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0750); err != nil {
@@ -96,18 +99,18 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	return &SqliteStore{db: db}, nil
 }
 
 // Close closes the database connection.
-func (s *Store) Close() error {
+func (s *SqliteStore) Close() error {
 	return s.db.Close()
 }
 
 // Topic CRUD
 
 // CreateTopic stores a new topic.
-func (s *Store) CreateTopic(t *models.Topic) error {
+func (s *SqliteStore) CreateTopic(t *models.Topic) error {
 	_, err := s.db.Exec(
 		`INSERT INTO topics (id, name, description, created_at, created_by, archived)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -120,7 +123,7 @@ func (s *Store) CreateTopic(t *models.Topic) error {
 }
 
 // GetTopic retrieves a topic by ID.
-func (s *Store) GetTopic(id uuid.UUID) (*models.Topic, error) {
+func (s *SqliteStore) GetTopic(id uuid.UUID) (*models.Topic, error) {
 	var t models.Topic
 	var idStr string
 	var archived int
@@ -144,7 +147,7 @@ func (s *Store) GetTopic(id uuid.UUID) (*models.Topic, error) {
 }
 
 // GetTopicByName finds a topic by its name.
-func (s *Store) GetTopicByName(name string) (*models.Topic, error) {
+func (s *SqliteStore) GetTopicByName(name string) (*models.Topic, error) {
 	var t models.Topic
 	var idStr string
 	var archived int
@@ -168,7 +171,7 @@ func (s *Store) GetTopicByName(name string) (*models.Topic, error) {
 }
 
 // UpdateTopic updates an existing topic.
-func (s *Store) UpdateTopic(t *models.Topic) error {
+func (s *SqliteStore) UpdateTopic(t *models.Topic) error {
 	_, err := s.db.Exec(
 		`UPDATE topics SET name = ?, description = ?, archived = ? WHERE id = ?`,
 		t.Name, t.Description, boolToInt(t.Archived), t.ID.String(),
@@ -180,7 +183,7 @@ func (s *Store) UpdateTopic(t *models.Topic) error {
 }
 
 // DeleteTopic deletes a topic (cascades to threads).
-func (s *Store) DeleteTopic(id uuid.UUID) error {
+func (s *SqliteStore) DeleteTopic(id uuid.UUID) error {
 	_, err := s.db.Exec(`DELETE FROM topics WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete topic: %w", err)
@@ -189,7 +192,7 @@ func (s *Store) DeleteTopic(id uuid.UUID) error {
 }
 
 // ListTopics returns all topics, optionally including archived ones.
-func (s *Store) ListTopics(includeArchived bool) ([]*models.Topic, error) {
+func (s *SqliteStore) ListTopics(includeArchived bool) ([]*models.Topic, error) {
 	query := `SELECT id, name, description, created_at, created_by, archived FROM topics`
 	if !includeArchived {
 		query += ` WHERE archived = 0`
@@ -221,7 +224,7 @@ func (s *Store) ListTopics(includeArchived bool) ([]*models.Topic, error) {
 }
 
 // ArchiveTopic sets the archived status of a topic.
-func (s *Store) ArchiveTopic(id uuid.UUID, archived bool) error {
+func (s *SqliteStore) ArchiveTopic(id uuid.UUID, archived bool) error {
 	_, err := s.db.Exec(`UPDATE topics SET archived = ? WHERE id = ?`, boolToInt(archived), id.String())
 	if err != nil {
 		return fmt.Errorf("archive topic: %w", err)
@@ -232,7 +235,7 @@ func (s *Store) ArchiveTopic(id uuid.UUID, archived bool) error {
 // Thread CRUD
 
 // CreateThread stores a new thread.
-func (s *Store) CreateThread(t *models.Thread) error {
+func (s *SqliteStore) CreateThread(t *models.Thread) error {
 	_, err := s.db.Exec(
 		`INSERT INTO threads (id, topic_id, subject, created_at, created_by, updated_at, sticky)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -245,7 +248,7 @@ func (s *Store) CreateThread(t *models.Thread) error {
 }
 
 // GetThread retrieves a thread by ID.
-func (s *Store) GetThread(id uuid.UUID) (*models.Thread, error) {
+func (s *SqliteStore) GetThread(id uuid.UUID) (*models.Thread, error) {
 	var t models.Thread
 	var idStr, topicIDStr string
 	var sticky int
@@ -271,7 +274,7 @@ func (s *Store) GetThread(id uuid.UUID) (*models.Thread, error) {
 }
 
 // UpdateThread updates an existing thread.
-func (s *Store) UpdateThread(t *models.Thread) error {
+func (s *SqliteStore) UpdateThread(t *models.Thread) error {
 	_, err := s.db.Exec(
 		`UPDATE threads SET subject = ?, sticky = ?, updated_at = ? WHERE id = ?`,
 		t.Subject, boolToInt(t.Sticky), time.Now().UTC(), t.ID.String(),
@@ -283,7 +286,7 @@ func (s *Store) UpdateThread(t *models.Thread) error {
 }
 
 // DeleteThread deletes a thread (cascades to messages).
-func (s *Store) DeleteThread(id uuid.UUID) error {
+func (s *SqliteStore) DeleteThread(id uuid.UUID) error {
 	_, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete thread: %w", err)
@@ -292,7 +295,7 @@ func (s *Store) DeleteThread(id uuid.UUID) error {
 }
 
 // ListThreads returns all threads for a topic, sorted by sticky then updated_at.
-func (s *Store) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
+func (s *SqliteStore) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT id, topic_id, subject, created_at, created_by, updated_at, sticky
 		 FROM threads WHERE topic_id = ?
@@ -325,7 +328,7 @@ func (s *Store) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
 }
 
 // SetThreadSticky sets the sticky status of a thread.
-func (s *Store) SetThreadSticky(id uuid.UUID, sticky bool) error {
+func (s *SqliteStore) SetThreadSticky(id uuid.UUID, sticky bool) error {
 	_, err := s.db.Exec(`UPDATE threads SET sticky = ? WHERE id = ?`, boolToInt(sticky), id.String())
 	if err != nil {
 		return fmt.Errorf("set thread sticky: %w", err)
@@ -336,7 +339,7 @@ func (s *Store) SetThreadSticky(id uuid.UUID, sticky bool) error {
 // Message CRUD
 
 // CreateMessage stores a new message.
-func (s *Store) CreateMessage(m *models.Message) error {
+func (s *SqliteStore) CreateMessage(m *models.Message) error {
 	var editedAt interface{}
 	if m.EditedAt != nil {
 		editedAt = m.EditedAt.UTC()
@@ -361,7 +364,7 @@ func (s *Store) CreateMessage(m *models.Message) error {
 }
 
 // GetMessage retrieves a message by ID.
-func (s *Store) GetMessage(id uuid.UUID) (*models.Message, error) {
+func (s *SqliteStore) GetMessage(id uuid.UUID) (*models.Message, error) {
 	var m models.Message
 	var idStr, threadIDStr string
 	var createdAt string
@@ -389,7 +392,7 @@ func (s *Store) GetMessage(id uuid.UUID) (*models.Message, error) {
 }
 
 // UpdateMessage updates an existing message.
-func (s *Store) UpdateMessage(m *models.Message) error {
+func (s *SqliteStore) UpdateMessage(m *models.Message) error {
 	var editedAt interface{}
 	if m.EditedAt != nil {
 		editedAt = m.EditedAt.UTC()
@@ -406,7 +409,7 @@ func (s *Store) UpdateMessage(m *models.Message) error {
 }
 
 // DeleteMessage deletes a message (cascades to attachments).
-func (s *Store) DeleteMessage(id uuid.UUID) error {
+func (s *SqliteStore) DeleteMessage(id uuid.UUID) error {
 	_, err := s.db.Exec(`DELETE FROM messages WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete message: %w", err)
@@ -415,7 +418,7 @@ func (s *Store) DeleteMessage(id uuid.UUID) error {
 }
 
 // ListMessages returns all messages for a thread, sorted by created_at.
-func (s *Store) ListMessages(threadID uuid.UUID) ([]*models.Message, error) {
+func (s *SqliteStore) ListMessages(threadID uuid.UUID) ([]*models.Message, error) {
 	rows, err := s.db.Query(
 		`SELECT id, thread_id, content, created_at, created_by, edited_at
 		 FROM messages WHERE thread_id = ?
@@ -452,7 +455,7 @@ func (s *Store) ListMessages(threadID uuid.UUID) ([]*models.Message, error) {
 // Attachment CRUD
 
 // CreateAttachment stores a new attachment.
-func (s *Store) CreateAttachment(a *models.Attachment) error {
+func (s *SqliteStore) CreateAttachment(a *models.Attachment) error {
 	_, err := s.db.Exec(
 		`INSERT INTO attachments (id, message_id, filename, mime_type, data, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -465,7 +468,7 @@ func (s *Store) CreateAttachment(a *models.Attachment) error {
 }
 
 // GetAttachment retrieves an attachment by ID.
-func (s *Store) GetAttachment(id uuid.UUID) (*models.Attachment, error) {
+func (s *SqliteStore) GetAttachment(id uuid.UUID) (*models.Attachment, error) {
 	var a models.Attachment
 	var idStr, messageIDStr string
 	var createdAt string
@@ -488,7 +491,7 @@ func (s *Store) GetAttachment(id uuid.UUID) (*models.Attachment, error) {
 }
 
 // DeleteAttachment deletes an attachment.
-func (s *Store) DeleteAttachment(id uuid.UUID) error {
+func (s *SqliteStore) DeleteAttachment(id uuid.UUID) error {
 	_, err := s.db.Exec(`DELETE FROM attachments WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete attachment: %w", err)
@@ -497,7 +500,7 @@ func (s *Store) DeleteAttachment(id uuid.UUID) error {
 }
 
 // ListAttachments returns all attachments for a message.
-func (s *Store) ListAttachments(messageID uuid.UUID) ([]*models.Attachment, error) {
+func (s *SqliteStore) ListAttachments(messageID uuid.UUID) ([]*models.Attachment, error) {
 	rows, err := s.db.Query(
 		`SELECT id, message_id, filename, mime_type, data, created_at
 		 FROM attachments WHERE message_id = ?
@@ -529,7 +532,7 @@ func (s *Store) ListAttachments(messageID uuid.UUID) ([]*models.Attachment, erro
 // Resolution helpers
 
 // ResolveTopic finds a topic by ID, ID prefix, or name.
-func (s *Store) ResolveTopic(idOrName string) (*models.Topic, error) {
+func (s *SqliteStore) ResolveTopic(idOrName string) (*models.Topic, error) {
 	// Try as full UUID first
 	if id, err := uuid.Parse(idOrName); err == nil {
 		return s.GetTopic(id)
@@ -564,7 +567,7 @@ func (s *Store) ResolveTopic(idOrName string) (*models.Topic, error) {
 }
 
 // ResolveThread finds a thread by ID or ID prefix.
-func (s *Store) ResolveThread(idPrefix string) (*models.Thread, error) {
+func (s *SqliteStore) ResolveThread(idPrefix string) (*models.Thread, error) {
 	// Try as full UUID first
 	if id, err := uuid.Parse(idPrefix); err == nil {
 		return s.GetThread(id)
@@ -609,7 +612,7 @@ func (s *Store) ResolveThread(idPrefix string) (*models.Thread, error) {
 }
 
 // ResolveMessage finds a message by ID or ID prefix.
-func (s *Store) ResolveMessage(idPrefix string) (*models.Message, error) {
+func (s *SqliteStore) ResolveMessage(idPrefix string) (*models.Message, error) {
 	// Try as full UUID first
 	if id, err := uuid.Parse(idPrefix); err == nil {
 		return s.GetMessage(id)
