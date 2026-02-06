@@ -6,6 +6,8 @@ package storage
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -91,7 +93,7 @@ func (s *MarkdownStore) GetMessage(id uuid.UUID) (*models.Message, error) {
 			if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
 				continue
 			}
-			fp := topicDir + "/" + de.Name()
+			fp := filepath.Join(topicDir, de.Name())
 			data, err := os.ReadFile(fp)
 			if err != nil {
 				continue
@@ -139,7 +141,7 @@ func (s *MarkdownStore) ListMessages(threadID uuid.UUID) ([]*models.Message, err
 
 	parsed := parseThreadMessages(string(data))
 
-	// Messages are already in file order which should be created_at ASC
+	// Convert parsed messages to model messages
 	var messages []*models.Message
 	for _, msg := range parsed {
 		messages = append(messages, &models.Message{
@@ -151,6 +153,11 @@ func (s *MarkdownStore) ListMessages(threadID uuid.UUID) ([]*models.Message, err
 			EditedAt:  msg.EditedAt,
 		})
 	}
+
+	// Explicitly sort by created_at ASC to match SqliteStore behavior
+	sort.Slice(messages, func(i, j int) bool {
+		return messages[i].CreatedAt.Before(messages[j].CreatedAt)
+	})
 
 	return messages, nil
 }
@@ -244,7 +251,7 @@ func (s *MarkdownStore) DeleteMessage(id uuid.UUID) error {
 			if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
 				continue
 			}
-			fp := topicDir + "/" + de.Name()
+			fp := filepath.Join(topicDir, de.Name())
 			if err := s.deleteMessageFromFile(fp, id, e.Name); err == nil {
 				return nil
 			}
