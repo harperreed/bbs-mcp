@@ -50,8 +50,14 @@ func (s *MarkdownStore) CreateMessage(m *models.Message) error {
 			return fmt.Errorf("read frontmatter: %w", err)
 		}
 
-		createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
-		topicID, _ := s.topicIDByName(topicName)
+		createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("parse thread created_at: %w", err)
+		}
+		topicID, err := s.topicIDByName(topicName)
+		if err != nil {
+			return fmt.Errorf("resolve topic ID: %w", err)
+		}
 
 		thread := &models.Thread{
 			ID:        m.ThreadID,
@@ -63,7 +69,10 @@ func (s *MarkdownStore) CreateMessage(m *models.Message) error {
 			Sticky:    fm.Sticky,
 		}
 
-		content := renderThread(thread, topicName, existingMessages)
+		content, err := renderThread(thread, topicName, existingMessages)
+		if err != nil {
+			return fmt.Errorf("render thread: %w", err)
+		}
 		if err := mdstore.AtomicWrite(threadFP, []byte(content)); err != nil {
 			return fmt.Errorf("write thread file: %w", err)
 		}
@@ -193,8 +202,14 @@ func (s *MarkdownStore) UpdateMessage(m *models.Message) error {
 		if err != nil {
 			return fmt.Errorf("read frontmatter: %w", err)
 		}
-		createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
-		topicID, _ := s.topicIDByName(topicName)
+		createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("parse thread created_at: %w", err)
+		}
+		topicID, err := s.topicIDByName(topicName)
+		if err != nil {
+			return fmt.Errorf("resolve topic ID: %w", err)
+		}
 
 		// Compute updated_at from latest message
 		updatedAt := createdAt
@@ -214,7 +229,10 @@ func (s *MarkdownStore) UpdateMessage(m *models.Message) error {
 			Sticky:    fm.Sticky,
 		}
 
-		content := renderThread(thread, topicName, messages)
+		content, err := renderThread(thread, topicName, messages)
+		if err != nil {
+			return fmt.Errorf("render thread: %w", err)
+		}
 		return mdstore.AtomicWrite(threadFP, []byte(content))
 	})
 }
@@ -289,8 +307,14 @@ func (s *MarkdownStore) deleteMessageFromFile(fp string, msgID uuid.UUID, topicN
 	}
 
 	// Rebuild thread file
-	createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
-	topicID, _ := s.topicIDByName(topicName)
+	createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("parse thread created_at: %w", err)
+	}
+	topicID, err := s.topicIDByName(topicName)
+	if err != nil {
+		return fmt.Errorf("resolve topic ID: %w", err)
+	}
 
 	updatedAt := createdAt
 	for _, msg := range newMessages {
@@ -309,7 +333,10 @@ func (s *MarkdownStore) deleteMessageFromFile(fp string, msgID uuid.UUID, topicN
 		Sticky:    fm.Sticky,
 	}
 
-	content := renderThread(thread, topicName, newMessages)
+	content, err := renderThread(thread, topicName, newMessages)
+	if err != nil {
+		return fmt.Errorf("render thread: %w", err)
+	}
 	return mdstore.AtomicWrite(fp, []byte(content))
 }
 

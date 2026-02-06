@@ -37,7 +37,10 @@ func (s *MarkdownStore) CreateThread(t *models.Thread) error {
 		fp := filepath.Join(topicDir, filename)
 
 		// Render the thread file (no messages yet)
-		content := renderThread(t, topicName, nil)
+		content, err := renderThread(t, topicName, nil)
+		if err != nil {
+			return fmt.Errorf("render thread: %w", err)
+		}
 		if err := mdstore.AtomicWrite(fp, []byte(content)); err != nil {
 			return fmt.Errorf("write thread file: %w", err)
 		}
@@ -135,7 +138,10 @@ func (s *MarkdownStore) UpdateThread(t *models.Thread) error {
 		t.UpdatedAt = time.Now().UTC()
 
 		// Render updated thread
-		content := renderThread(t, topicName, messages)
+		content, err := renderThread(t, topicName, messages)
+		if err != nil {
+			return fmt.Errorf("render thread: %w", err)
+		}
 
 		// Determine new filename (in case subject changed)
 		newFilename := s.threadFileName(topicName, t.Subject, t.ID)
@@ -236,7 +242,10 @@ func (s *MarkdownStore) SetThreadSticky(id uuid.UUID, sticky bool) error {
 		if err != nil {
 			return fmt.Errorf("resolve topic ID: %w", err)
 		}
-		createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
+		createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("parse thread created_at: %w", err)
+		}
 
 		messages := parseThreadMessages(string(data))
 
@@ -259,7 +268,10 @@ func (s *MarkdownStore) SetThreadSticky(id uuid.UUID, sticky bool) error {
 			Sticky:    sticky,
 		}
 
-		content := renderThread(thread, topicName, messages)
+		content, err := renderThread(thread, topicName, messages)
+		if err != nil {
+			return fmt.Errorf("render thread: %w", err)
+		}
 		if err := mdstore.AtomicWrite(threadFP, []byte(content)); err != nil {
 			return fmt.Errorf("write thread file: %w", err)
 		}
@@ -305,7 +317,10 @@ func (s *MarkdownStore) readThreadFromFile(fp string, expectedID uuid.UUID) (*mo
 		return nil, fmt.Errorf("resolve topic ID: %w", err)
 	}
 
-	createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
+	createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse thread created_at: %w", err)
+	}
 
 	// Compute updated_at from messages
 	updatedAt := createdAt

@@ -155,8 +155,9 @@ var editedAtRegexp = regexp.MustCompile(`<!-- edited:(\d{4}-\d{2}-\d{2}T\d{2}:\d
 // parseThreadMessages parses messages from the body of a thread markdown file (after frontmatter).
 // Malformed message sections are silently skipped.
 func parseThreadMessages(content string) []*parsedMessage {
-	// Split off frontmatter
-	body := stripFrontmatter(content)
+	// Split off frontmatter using mdstore.ParseFrontmatter
+	_, body := mdstore.ParseFrontmatter(content)
+	body = strings.TrimSpace(body)
 	if body == "" {
 		return nil
 	}
@@ -181,26 +182,10 @@ func parseThreadMessages(content string) []*parsedMessage {
 	return messages
 }
 
-// stripFrontmatter removes the YAML frontmatter from markdown content.
-func stripFrontmatter(content string) string {
-	if !strings.HasPrefix(content, "---\n") {
-		return content
-	}
-	end := strings.Index(content[4:], "\n---\n")
-	if end == -1 {
-		end = strings.Index(content[4:], "\n---")
-		if end == -1 {
-			return ""
-		}
-		return strings.TrimSpace(content[4+end+4:])
-	}
-	return strings.TrimSpace(content[4+end+5:])
-}
-
 // splitMessages splits the message body into individual message sections.
 func splitMessages(body string) []string {
-	// Messages are separated by "\n\n---\n\n" but the first message just starts with ##
-	parts := strings.Split(body, "\n---\n")
+	// Messages are separated by "<!-- message-separator -->" on its own line
+	parts := strings.Split(body, "\n<!-- message-separator -->\n")
 	return parts
 }
 
@@ -299,7 +284,7 @@ func parseMessageSection(section string) (*parsedMessage, error) {
 }
 
 // renderThread renders a complete thread file (frontmatter + messages).
-func renderThread(thread *models.Thread, topicName string, messages []*parsedMessage) string {
+func renderThread(thread *models.Thread, topicName string, messages []*parsedMessage) (string, error) {
 	fm := threadFrontmatter{
 		ID:        thread.ID.String(),
 		Topic:     topicName,
@@ -313,15 +298,18 @@ func renderThread(thread *models.Thread, topicName string, messages []*parsedMes
 	var body strings.Builder
 	for i, msg := range messages {
 		if i > 0 {
-			body.WriteString("\n---\n")
+			body.WriteString("\n<!-- message-separator -->\n")
 		}
 		body.WriteString("\n")
 		body.WriteString(renderMessage(msg))
 	}
 
 	// Use mdstore.RenderFrontmatter for the frontmatter section
-	content, _ := mdstore.RenderFrontmatter(&fm, body.String())
-	return content
+	content, err := mdstore.RenderFrontmatter(&fm, body.String())
+	if err != nil {
+		return "", fmt.Errorf("render thread frontmatter: %w", err)
+	}
+	return content, nil
 }
 
 // renderMessage renders a single message section.
@@ -401,9 +389,10 @@ func (s *MarkdownStore) writeTopics(entries []topicEntry) error {
 
 // attachmentMeta holds metadata for an attachment stored alongside the file.
 type attachmentMeta struct {
-	ID        string `yaml:"id"`
-	MessageID string `yaml:"message_id"`
-	Filename  string `yaml:"filename"`
-	MimeType  string `yaml:"mime_type"`
-	CreatedAt string `yaml:"created_at"`
+	ID               string `yaml:"id"`
+	MessageID        string `yaml:"message_id"`
+	Filename         string `yaml:"filename"`
+	OriginalFilename string `yaml:"original_filename,omitempty"`
+	MimeType         string `yaml:"mime_type"`
+	CreatedAt        string `yaml:"created_at"`
 }

@@ -211,7 +211,10 @@ func (s *MarkdownStore) updateThreadFileTopicName(fp, oldName, newName string) e
 	if err != nil {
 		return fmt.Errorf("resolve topic ID: %w", err)
 	}
-	createdAt, _ := mdstore.ParseTime(fm.CreatedAt)
+	createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("parse thread created_at: %w", err)
+	}
 
 	// Compute updated_at from messages
 	updatedAt := createdAt
@@ -231,7 +234,10 @@ func (s *MarkdownStore) updateThreadFileTopicName(fp, oldName, newName string) e
 		Sticky:    fm.Sticky,
 	}
 
-	content := renderThread(thread, newName, messages)
+	content, err := renderThread(thread, newName, messages)
+	if err != nil {
+		return fmt.Errorf("render thread: %w", err)
+	}
 	return mdstore.AtomicWrite(fp, []byte(content))
 }
 

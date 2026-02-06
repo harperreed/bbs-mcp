@@ -830,7 +830,7 @@ sticky: false
 
 Testing that the BBS is operational. All systems nominal.
 
----
+<!-- message-separator -->
 
 ## claude_opus@mcp — 2026-02-02T02:42:30Z
 <!-- msg:762ee7bf-1234-5678-abcd-ef0123456789 -->
@@ -1145,6 +1145,10 @@ func TestMarkdownAttachmentFilenameCollision(t *testing.T) {
 	}
 	if string(got2.Data) != "second report" {
 		t.Errorf("expected second attachment data 'second report', got %q", string(got2.Data))
+	}
+	// The second attachment had a collision, so its filename should still be the original
+	if got2.Filename != "report.txt" {
+		t.Errorf("expected second attachment filename 'report.txt' (original preserved), got %q", got2.Filename)
 	}
 
 	// Both should appear in list
@@ -1523,21 +1527,19 @@ func TestMarkdownMessageContainingMarkdownSeparator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListMessages failed: %v", err)
 	}
-	// Due to the "---" in content, the parser may split incorrectly.
-	// We verify the second message is at least recoverable.
-	if len(messages) < 2 {
-		t.Errorf("expected at least 2 messages, got %d", len(messages))
+	// The HTML comment separator ensures "---" in content does not corrupt parsing.
+	if len(messages) != 2 {
+		t.Errorf("expected exactly 2 messages, got %d", len(messages))
+	}
+
+	// Verify the first message content is fully preserved including "---"
+	if messages[0].Content != contentWithSeparator {
+		t.Errorf("first message content was corrupted:\nwant: %q\ngot:  %q", contentWithSeparator, messages[0].Content)
 	}
 
 	// Verify the second message is intact
-	foundSecond := false
-	for _, m := range messages {
-		if m.Content == "Second message" {
-			foundSecond = true
-		}
-	}
-	if !foundSecond {
-		t.Error("second message not found or corrupted")
+	if messages[1].Content != "Second message" {
+		t.Errorf("expected second message content 'Second message', got %q", messages[1].Content)
 	}
 }
 

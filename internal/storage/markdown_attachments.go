@@ -32,9 +32,11 @@ func (s *MarkdownStore) CreateAttachment(a *models.Attachment) error {
 
 		// Resolve filename, handling collisions by prefixing with attachment ID
 		storedFilename := a.Filename
+		originalFilename := ""
 		dataPath := filepath.Join(attDir, storedFilename)
 		if _, err := os.Stat(dataPath); err == nil {
 			// File already exists, make unique by prefixing with attachment ID
+			originalFilename = a.Filename
 			storedFilename = a.ID.String()[:8] + "-" + a.Filename
 			dataPath = filepath.Join(attDir, storedFilename)
 		}
@@ -44,13 +46,14 @@ func (s *MarkdownStore) CreateAttachment(a *models.Attachment) error {
 			return fmt.Errorf("write attachment data: %w", err)
 		}
 
-		// Write metadata file (store the resolved filename)
+		// Write metadata file (store the resolved filename and original if munged)
 		meta := attachmentMeta{
-			ID:        a.ID.String(),
-			MessageID: a.MessageID.String(),
-			Filename:  storedFilename,
-			MimeType:  a.MimeType,
-			CreatedAt: mdstore.FormatTime(a.CreatedAt.UTC()),
+			ID:               a.ID.String(),
+			MessageID:        a.MessageID.String(),
+			Filename:         storedFilename,
+			OriginalFilename: originalFilename,
+			MimeType:         a.MimeType,
+			CreatedAt:        mdstore.FormatTime(a.CreatedAt.UTC()),
 		}
 		metaPath := filepath.Join(attDir, storedFilename+".meta.yaml")
 		if err := mdstore.WriteYAML(metaPath, &meta); err != nil {
@@ -267,10 +270,16 @@ func (s *MarkdownStore) readAttachmentFromMeta(metaPath, dir string) (*models.At
 		return nil, fmt.Errorf("read attachment data: %w", err)
 	}
 
+	// Use original filename if available (collision case), otherwise use stored filename
+	displayFilename := meta.Filename
+	if meta.OriginalFilename != "" {
+		displayFilename = meta.OriginalFilename
+	}
+
 	return &models.Attachment{
 		ID:        id,
 		MessageID: messageID,
-		Filename:  meta.Filename,
+		Filename:  displayFilename,
 		MimeType:  meta.MimeType,
 		Data:      data,
 		CreatedAt: createdAt,
