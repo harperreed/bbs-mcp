@@ -978,10 +978,55 @@ func TestRunMigrate(t *testing.T) {
 	_, cleanup := setupTestEnv(t)
 	defer cleanup()
 
-	// runMigrate just prints info, shouldn't return error
+	// Set up a temporary config directory so config.Load returns defaults (sqlite)
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	// Test: missing --to flag (empty string) should fail
+	oldTo := migrateTo
+	migrateTo = ""
+	defer func() { migrateTo = oldTo }()
 	err := runMigrate(nil, nil)
+	if err == nil {
+		t.Error("expected error when --to flag is empty")
+	}
+
+	// Test: invalid backend should fail
+	migrateTo = "mongodb"
+	err = runMigrate(nil, nil)
+	if err == nil {
+		t.Error("expected error for invalid backend")
+	}
+
+	// Test: same backend as current should fail
+	migrateTo = "sqlite"
+	err = runMigrate(nil, nil)
+	if err == nil {
+		t.Error("expected error when target matches current backend")
+	}
+
+	// Test: non-empty target directory without --force should fail
+	migrateTo = "markdown"
+	nonEmptyDir := t.TempDir()
+	if writeErr := os.WriteFile(filepath.Join(nonEmptyDir, "existing.txt"), []byte("data"), 0644); writeErr != nil {
+		t.Fatalf("create file: %v", writeErr)
+	}
+	oldDataDir := migrateDataDir
+	migrateDataDir = nonEmptyDir
+	defer func() { migrateDataDir = oldDataDir }()
+	err = runMigrate(nil, nil)
+	if err == nil {
+		t.Error("expected error for non-empty target without --force")
+	}
+
+	// Test: successful migration to markdown with a fresh data dir
+	freshDir := t.TempDir()
+	emptySubDir := filepath.Join(freshDir, "target")
+	migrateDataDir = emptySubDir
+	t.Setenv("XDG_DATA_HOME", freshDir)
+	err = runMigrate(nil, nil)
 	if err != nil {
-		t.Errorf("runMigrate failed: %v", err)
+		t.Errorf("expected successful migration, got: %v", err)
 	}
 }
 
