@@ -6,7 +6,9 @@ package storage
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -57,7 +59,11 @@ func (s *MarkdownStore) GetTopic(id uuid.UUID) (*models.Topic, error) {
 	idStr := id.String()
 	for _, e := range entries {
 		if e.ID == idStr {
-			return e.toModel(), nil
+			topic, err := e.toModel()
+			if err != nil {
+				return nil, fmt.Errorf("parse topic entry: %w", err)
+			}
+			return topic, nil
 		}
 	}
 	return nil, fmt.Errorf("topic not found: %s", id)
@@ -72,7 +78,11 @@ func (s *MarkdownStore) GetTopicByName(name string) (*models.Topic, error) {
 
 	for _, e := range entries {
 		if e.Name == name {
-			return e.toModel(), nil
+			topic, err := e.toModel()
+			if err != nil {
+				return nil, fmt.Errorf("parse topic entry: %w", err)
+			}
+			return topic, nil
 		}
 	}
 	return nil, fmt.Errorf("topic not found: %s", name)
@@ -90,7 +100,12 @@ func (s *MarkdownStore) ListTopics(includeArchived bool) ([]*models.Topic, error
 		if !includeArchived && e.Archived {
 			continue
 		}
-		topics = append(topics, e.toModel())
+		topic, err := e.toModel()
+		if err != nil {
+			// Skip malformed entries so one corrupt entry doesn't break listing
+			continue
+		}
+		topics = append(topics, topic)
 	}
 
 	// Sort by name to match SQLite behavior
@@ -134,7 +149,7 @@ func (s *MarkdownStore) UpdateTopic(t *models.Topic) error {
 		return fmt.Errorf("write topics: %w", err)
 	}
 
-	// Rename directory if name changed
+	// Rename directory if name changed and update thread frontmatter
 	if oldName != t.Name {
 		oldDir := s.topicDirPath(oldName)
 		newDir := s.topicDirPath(t.Name)
@@ -143,9 +158,88 @@ func (s *MarkdownStore) UpdateTopic(t *models.Topic) error {
 				return fmt.Errorf("rename topic directory: %w", err)
 			}
 		}
+
+		// Update the topic field in all thread frontmatter files
+		if err := s.updateThreadTopicNames(newDir, oldName, t.Name); err != nil {
+			return fmt.Errorf("update thread frontmatter after topic rename: %w", err)
+		}
 	}
 
 	return nil
+}
+
+// updateThreadTopicNames iterates all .md files in a topic directory and updates
+// their frontmatter topic field from oldName to newName.
+func (s *MarkdownStore) updateThreadTopicNames(topicDir, oldName, newName string) error {
+	dirEntries, err := os.ReadDir(topicDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read topic directory: %w", err)
+	}
+
+	for _, de := range dirEntries {
+		if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
+			continue
+		}
+		fp := filepath.Join(topicDir, de.Name())
+		if err := s.updateThreadFileTopicName(fp, oldName, newName); err != nil {
+			// Skip files that fail to parse rather than aborting the entire rename
+			continue
+		}
+	}
+	return nil
+}
+
+// updateThreadFileTopicName reads a single thread file, updates the topic field
+// in its frontmatter, and writes it back atomically.
+func (s *MarkdownStore) updateThreadFileTopicName(fp, oldName, newName string) error {
+	fm, err := readThreadFrontmatter(fp)
+	if err != nil {
+		return err
+	}
+	if fm.Topic != oldName {
+		return nil
+	}
+
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		return err
+	}
+
+	messages := parseThreadMessages(string(data))
+
+	threadID, err := uuid.Parse(fm.ID)
+	if err != nil {
+		return fmt.Errorf("parse thread ID: %w", err)
+	}
+	topicID, err := s.topicIDByName(newName)
+	if err != nil {
+		return fmt.Errorf("resolve topic ID: %w", err)
+	}
+	createdAt, _ := parseTimestamp(fm.CreatedAt)
+
+	// Compute updated_at from messages
+	updatedAt := createdAt
+	for _, msg := range messages {
+		if msg.CreatedAt.After(updatedAt) {
+			updatedAt = msg.CreatedAt
+		}
+	}
+
+	thread := &models.Thread{
+		ID:        threadID,
+		TopicID:   topicID,
+		Subject:   fm.Subject,
+		CreatedAt: createdAt,
+		CreatedBy: fm.CreatedBy,
+		UpdatedAt: updatedAt,
+		Sticky:    fm.Sticky,
+	}
+
+	content := renderThread(thread, newName, messages)
+	return atomicWrite(fp, []byte(content))
 }
 
 // DeleteTopic deletes a topic and its entire directory (cascades to threads).

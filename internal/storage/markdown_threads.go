@@ -200,13 +200,87 @@ func (s *MarkdownStore) DeleteThread(id uuid.UUID) error {
 }
 
 // SetThreadSticky sets the sticky status of a thread.
+// Performs the read-modify-write under a single lock hold to avoid TOCTOU races.
 func (s *MarkdownStore) SetThreadSticky(id uuid.UUID, sticky bool) error {
-	thread, err := s.GetThread(id)
+	lock, err := s.lockFile()
 	if err != nil {
 		return err
 	}
-	thread.Sticky = sticky
-	return s.UpdateThread(thread)
+	defer unlockFile(lock)
+
+	// Find the thread file while holding the lock
+	entries, err := s.readTopics()
+	if err != nil {
+		return err
+	}
+
+	var threadFP string
+	var topicName string
+	for _, e := range entries {
+		fp, fpErr := s.threadFilePath(e.Name, id)
+		if fpErr != nil {
+			continue
+		}
+		threadFP = fp
+		topicName = e.Name
+		break
+	}
+	if threadFP == "" {
+		return fmt.Errorf("thread not found: %s", id)
+	}
+
+	// Read thread data under lock
+	data, err := os.ReadFile(threadFP)
+	if err != nil {
+		return fmt.Errorf("read thread file: %w", err)
+	}
+
+	fm, err := readThreadFrontmatter(threadFP)
+	if err != nil {
+		return fmt.Errorf("read frontmatter: %w", err)
+	}
+
+	threadID, err := uuid.Parse(fm.ID)
+	if err != nil {
+		return fmt.Errorf("parse thread ID: %w", err)
+	}
+	if threadID != id {
+		return fmt.Errorf("thread ID mismatch")
+	}
+
+	topicID, err := s.topicIDByName(topicName)
+	if err != nil {
+		return fmt.Errorf("resolve topic ID: %w", err)
+	}
+	createdAt, _ := parseTimestamp(fm.CreatedAt)
+
+	messages := parseThreadMessages(string(data))
+
+	// Compute updated_at from messages
+	updatedAt := createdAt
+	for _, msg := range messages {
+		if msg.CreatedAt.After(updatedAt) {
+			updatedAt = msg.CreatedAt
+		}
+	}
+
+	// Modify sticky and write back, all under the same lock
+	thread := &models.Thread{
+		ID:        id,
+		TopicID:   topicID,
+		Subject:   fm.Subject,
+		CreatedAt: createdAt,
+		CreatedBy: fm.CreatedBy,
+		UpdatedAt: updatedAt,
+		Sticky:    sticky,
+	}
+
+	content := renderThread(thread, topicName, messages)
+	if err := atomicWrite(threadFP, []byte(content)); err != nil {
+		return fmt.Errorf("write thread file: %w", err)
+	}
+
+	return nil
 }
 
 // topicNameByID looks up a topic name by its UUID.

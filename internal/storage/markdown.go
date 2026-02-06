@@ -1,5 +1,5 @@
 // ABOUTME: Core MarkdownStore struct and helpers for file-based BBS storage
-// ABOUTME: Provides constructor, file locking, atomic writes, slug generation, and frontmatter parsing
+// ABOUTME: Provides constructor, atomic writes, slug generation, and frontmatter parsing
 
 package storage
 
@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -80,27 +79,6 @@ func (s *MarkdownStore) threadFilePath(topicName string, threadID uuid.UUID) (st
 // attachmentDirPath returns the directory path for attachments of a specific message.
 func (s *MarkdownStore) attachmentDirPath(topicName string, msgIDPrefix string) string {
 	return filepath.Join(s.topicDirPath(topicName), "_attachments", msgIDPrefix)
-}
-
-// lockFile acquires an exclusive file lock for write operations.
-// Returns the lock file which must be unlocked by the caller.
-func (s *MarkdownStore) lockFile() (*os.File, error) {
-	lockPath := filepath.Join(s.dataDir, ".lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("acquire lock: %w", err)
-	}
-	return f, nil
-}
-
-// unlockFile releases the file lock.
-func unlockFile(f *os.File) {
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	f.Close()
 }
 
 // atomicWrite writes data to a file atomically by writing to a temp file then renaming.
@@ -454,11 +432,18 @@ type topicEntry struct {
 }
 
 // toModel converts a topicEntry to a models.Topic.
-func (e *topicEntry) toModel() *models.Topic {
-	id, _ := uuid.Parse(e.ID)
-	createdAt, _ := time.Parse(time.RFC3339Nano, e.CreatedAt)
-	if createdAt.IsZero() {
-		createdAt, _ = time.Parse(time.RFC3339, e.CreatedAt)
+// Returns an error if the entry contains malformed data (e.g., invalid UUID or timestamp).
+func (e *topicEntry) toModel() (*models.Topic, error) {
+	id, err := uuid.Parse(e.ID)
+	if err != nil {
+		return nil, fmt.Errorf("parse topic ID %q: %w", e.ID, err)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, e.CreatedAt)
+	if err != nil {
+		createdAt, err = time.Parse(time.RFC3339, e.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse topic created_at %q: %w", e.CreatedAt, err)
+		}
 	}
 	return &models.Topic{
 		ID:          id,
@@ -467,7 +452,7 @@ func (e *topicEntry) toModel() *models.Topic {
 		CreatedAt:   createdAt,
 		CreatedBy:   e.CreatedBy,
 		Archived:    e.Archived,
-	}
+	}, nil
 }
 
 // fromTopicModel converts a models.Topic to a topicEntry.

@@ -36,21 +36,29 @@ func (s *MarkdownStore) CreateAttachment(a *models.Attachment) error {
 		return fmt.Errorf("create attachment directory: %w", err)
 	}
 
+	// Resolve filename, handling collisions by prefixing with attachment ID
+	storedFilename := a.Filename
+	dataPath := filepath.Join(attDir, storedFilename)
+	if _, err := os.Stat(dataPath); err == nil {
+		// File already exists, make unique by prefixing with attachment ID
+		storedFilename = a.ID.String()[:8] + "-" + a.Filename
+		dataPath = filepath.Join(attDir, storedFilename)
+	}
+
 	// Write attachment data file
-	dataPath := filepath.Join(attDir, a.Filename)
 	if err := atomicWrite(dataPath, a.Data); err != nil {
 		return fmt.Errorf("write attachment data: %w", err)
 	}
 
-	// Write metadata file
+	// Write metadata file (store the resolved filename)
 	meta := attachmentMeta{
 		ID:        a.ID.String(),
 		MessageID: a.MessageID.String(),
-		Filename:  a.Filename,
+		Filename:  storedFilename,
 		MimeType:  a.MimeType,
 		CreatedAt: a.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
-	metaPath := filepath.Join(attDir, a.Filename+".meta.yaml")
+	metaPath := filepath.Join(attDir, storedFilename+".meta.yaml")
 	metaData, err := yaml.Marshal(&meta)
 	if err != nil {
 		return fmt.Errorf("marshal attachment metadata: %w", err)
@@ -252,9 +260,18 @@ func (s *MarkdownStore) readAttachmentFromMeta(metaPath, dir string) (*models.At
 		return nil, err
 	}
 
-	id, _ := uuid.Parse(meta.ID)
-	messageID, _ := uuid.Parse(meta.MessageID)
-	createdAt, _ := parseTimestamp(meta.CreatedAt)
+	id, err := uuid.Parse(meta.ID)
+	if err != nil {
+		return nil, fmt.Errorf("parse attachment ID %q: %w", meta.ID, err)
+	}
+	messageID, err := uuid.Parse(meta.MessageID)
+	if err != nil {
+		return nil, fmt.Errorf("parse attachment message ID %q: %w", meta.MessageID, err)
+	}
+	createdAt, err := parseTimestamp(meta.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse attachment created_at %q: %w", meta.CreatedAt, err)
+	}
 
 	// Read data file
 	dataPath := filepath.Join(dir, meta.Filename)

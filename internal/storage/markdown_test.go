@@ -1028,3 +1028,205 @@ func TestMarkdownTopicDirectoryRemovedOnDelete(t *testing.T) {
 		t.Error("topic directory should be removed on delete")
 	}
 }
+
+func TestMarkdownUpdateTopicRenameUpdatesThreadFrontmatter(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("old-name", "A topic", "test@cli")
+	_ = store.CreateTopic(topic)
+
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+
+	msg := models.NewMessage(thread.ID, "Hello from old topic", "test@cli")
+	_ = store.CreateMessage(msg)
+
+	// Rename the topic
+	topic.Name = "new-name"
+	err := store.UpdateTopic(topic)
+	if err != nil {
+		t.Fatalf("UpdateTopic (rename) failed: %v", err)
+	}
+
+	// Verify old directory is gone and new directory exists
+	oldDir := filepath.Join(store.dataDir, "old-name")
+	newDir := filepath.Join(store.dataDir, "new-name")
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Error("old topic directory should not exist after rename")
+	}
+	if _, err := os.Stat(newDir); os.IsNotExist(err) {
+		t.Error("new topic directory should exist after rename")
+	}
+
+	// Verify the thread is still retrievable
+	got, err := store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after rename failed: %v", err)
+	}
+	if got.Subject != "Test Thread" {
+		t.Errorf("expected subject 'Test Thread', got %q", got.Subject)
+	}
+
+	// Verify thread frontmatter was updated by reading the file directly
+	entries, _ := os.ReadDir(newDir)
+	foundThread := false
+	for _, de := range entries {
+		if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
+			continue
+		}
+		fp := filepath.Join(newDir, de.Name())
+		fm, fmErr := readThreadFrontmatter(fp)
+		if fmErr != nil {
+			continue
+		}
+		if fm.ID == thread.ID.String() {
+			foundThread = true
+			if fm.Topic != "new-name" {
+				t.Errorf("expected thread frontmatter topic to be 'new-name', got %q", fm.Topic)
+			}
+		}
+	}
+	if !foundThread {
+		t.Error("thread file not found in renamed topic directory")
+	}
+
+	// Verify messages survived the rename
+	messages, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages after rename failed: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("expected 1 message after rename, got %d", len(messages))
+	}
+}
+
+func TestMarkdownAttachmentFilenameCollision(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test topic", "test@cli")
+	_ = store.CreateTopic(topic)
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+	msg := models.NewMessage(thread.ID, "Hello", "test@cli")
+	_ = store.CreateMessage(msg)
+
+	// Create first attachment with a filename
+	att1 := models.NewAttachment(msg.ID, "report.txt", "text/plain", []byte("first report"))
+	err := store.CreateAttachment(att1)
+	if err != nil {
+		t.Fatalf("CreateAttachment (first) failed: %v", err)
+	}
+
+	// Create second attachment with the same filename
+	att2 := models.NewAttachment(msg.ID, "report.txt", "text/plain", []byte("second report"))
+	err = store.CreateAttachment(att2)
+	if err != nil {
+		t.Fatalf("CreateAttachment (collision) failed: %v", err)
+	}
+
+	// Both attachments should be retrievable with correct data
+	got1, err := store.GetAttachment(att1.ID)
+	if err != nil {
+		t.Fatalf("GetAttachment (first) failed: %v", err)
+	}
+	if string(got1.Data) != "first report" {
+		t.Errorf("expected first attachment data 'first report', got %q", string(got1.Data))
+	}
+
+	got2, err := store.GetAttachment(att2.ID)
+	if err != nil {
+		t.Fatalf("GetAttachment (second) failed: %v", err)
+	}
+	if string(got2.Data) != "second report" {
+		t.Errorf("expected second attachment data 'second report', got %q", string(got2.Data))
+	}
+
+	// Both should appear in list
+	attachments, err := store.ListAttachments(msg.ID)
+	if err != nil {
+		t.Fatalf("ListAttachments failed: %v", err)
+	}
+	if len(attachments) != 2 {
+		t.Errorf("expected 2 attachments, got %d", len(attachments))
+	}
+}
+
+func TestMarkdownToModelErrorPropagation(t *testing.T) {
+	// Test that toModel properly returns an error for invalid data
+	entry := topicEntry{
+		ID:        "not-a-uuid",
+		Name:      "test",
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}
+	_, err := entry.toModel()
+	if err == nil {
+		t.Error("expected error for invalid UUID in toModel")
+	}
+
+	entry2 := topicEntry{
+		ID:        "5681e681-3603-4dbf-b289-08ae47819163",
+		Name:      "test",
+		CreatedAt: "not-a-timestamp",
+	}
+	_, err = entry2.toModel()
+	if err == nil {
+		t.Error("expected error for invalid timestamp in toModel")
+	}
+
+	// Valid entry should succeed
+	entry3 := topicEntry{
+		ID:        "5681e681-3603-4dbf-b289-08ae47819163",
+		Name:      "test",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		CreatedBy: "test@cli",
+	}
+	topic, err := entry3.toModel()
+	if err != nil {
+		t.Fatalf("expected no error for valid entry, got: %v", err)
+	}
+	if topic.Name != "test" {
+		t.Errorf("expected name 'test', got %q", topic.Name)
+	}
+}
+
+func TestMarkdownSetThreadStickyAtomicity(t *testing.T) {
+	store := newTestMarkdownStore(t)
+	defer store.Close()
+
+	topic := models.NewTopic("Test", "Test", "test@cli")
+	_ = store.CreateTopic(topic)
+	thread := models.NewThread(topic.ID, "Test Thread", "test@cli")
+	_ = store.CreateThread(thread)
+
+	// Add a message to the thread
+	msg := models.NewMessage(thread.ID, "Important content", "test@cli")
+	_ = store.CreateMessage(msg)
+
+	// Set sticky
+	err := store.SetThreadSticky(thread.ID, true)
+	if err != nil {
+		t.Fatalf("SetThreadSticky failed: %v", err)
+	}
+
+	// Verify sticky is set and message content is preserved
+	got, err := store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after SetThreadSticky failed: %v", err)
+	}
+	if !got.Sticky {
+		t.Error("thread should be sticky")
+	}
+
+	messages, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages after SetThreadSticky failed: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	if messages[0].Content != "Important content" {
+		t.Errorf("expected message content 'Important content', got %q", messages[0].Content)
+	}
+}
