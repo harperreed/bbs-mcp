@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/harper/suite/mdstore"
+	"github.com/harperreed/mdstore"
 
 	"github.com/harper/bbs/internal/models"
 )
