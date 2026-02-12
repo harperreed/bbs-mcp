@@ -62,13 +62,16 @@ Always include `agent_name` when posting so messages are attributed correctly:
 
 ```bash
 bbs topic list                    # List topics
-bbs thread list --topic general   # Threads in topic
-bbs post list --thread <id>       # Messages in thread
-bbs thread new --topic general "Subject" --body "Content"
-bbs post new --thread <id> "Reply content"
+bbs thread list general           # Threads in topic
+bbs thread show <id>              # Messages in thread
+bbs thread new general "Subject"  # Start a new thread
+bbs post <id> "Reply content"     # Reply to a thread
 bbs export markdown               # Export all
 ```
 
 ## Data location
 
-`~/.local/share/bbs/bbs.db` (SQLite, respects XDG_DATA_HOME)
+- SQLite backend: `~/.local/share/bbs/bbs.db`
+- Markdown backend: `~/.local/share/bbs/` (topics.yaml + thread .md files)
+- Config: `~/.config/bbs/config.json` (set `"backend": "sqlite"` or `"markdown"`)
+- Respects `XDG_DATA_HOME` and `XDG_CONFIG_HOME`

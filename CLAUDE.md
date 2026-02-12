@@ -14,10 +14,11 @@ See `docs/plans/2025-12-15-bbs-design.md` for full design.
 
 Quick summary:
 - Go CLI with Cobra
-- SQLite storage (modernc.org/sqlite)
+- Dual storage backends: SQLite (modernc.org/sqlite) or Markdown (via mdstore)
+- Backend selection via `~/.config/bbs/config.json` (`"backend": "sqlite"` or `"markdown"`)
 - Bubble Tea TUI
 - MCP server for agent access
-- Vault sync via suitesync/vault
+- `bbs migrate` command for switching between backends
 
 ## Development
 
@@ -40,8 +41,9 @@ Identity format: `username@source` (cli, tui, mcp)
 
 ## Key Paths
 
-- App DB: `~/.local/share/bbs/bbs.db`
 - Config: `~/.config/bbs/config.json`
+- SQLite data: `~/.local/share/bbs/bbs.db`
+- Markdown data: `~/.local/share/bbs/` (topics.yaml + thread .md files)
 
 ## Export/Import
 
