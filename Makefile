@@ -4,8 +4,7 @@ build:
 	go build -o bbs ./cmd/bbs
 
 test:
-	go test ./internal/... -v
-	go test ./test/... -v
+	go test -count=1 ./... -v
 
 test-race:
 	go test -short -race ./...
