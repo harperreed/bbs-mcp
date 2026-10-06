@@ -69,23 +69,23 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
 
           # Create amd64 archive
-          mkdir -p bbs_${VERSION}_Linux_x86_64
-          cp bbs-linux-amd64 bbs_${VERSION}_Linux_x86_64/bbs
-          cp README.md bbs_${VERSION}_Linux_x86_64/ 2>/dev/null || true
-          tar -czvf bbs_${VERSION}_Linux_x86_64.tar.gz bbs_${VERSION}_Linux_x86_64
+          mkdir -p "bbs_${VERSION}_Linux_x86_64"
+          cp bbs-linux-amd64 "bbs_${VERSION}_Linux_x86_64/bbs"
+          cp README.md "bbs_${VERSION}_Linux_x86_64/" 2>/dev/null || true
+          tar -czvf "bbs_${VERSION}_Linux_x86_64.tar.gz" "bbs_${VERSION}_Linux_x86_64"
 
           # Create arm64 archive
-          mkdir -p bbs_${VERSION}_Linux_arm64
-          cp bbs-linux-arm64 bbs_${VERSION}_Linux_arm64/bbs
-          cp README.md bbs_${VERSION}_Linux_arm64/ 2>/dev/null || true
-          tar -czvf bbs_${VERSION}_Linux_arm64.tar.gz bbs_${VERSION}_Linux_arm64
+          mkdir -p "bbs_${VERSION}_Linux_arm64"
+          cp bbs-linux-arm64 "bbs_${VERSION}_Linux_arm64/bbs"
+          cp README.md "bbs_${VERSION}_Linux_arm64/" 2>/dev/null || true
+          tar -czvf "bbs_${VERSION}_Linux_arm64.tar.gz" "bbs_${VERSION}_Linux_arm64"
 
       - name: Upload to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          gh release upload ${GITHUB_REF_NAME} \
-            bbs_${VERSION}_Linux_x86_64.tar.gz \
-            bbs_${VERSION}_Linux_arm64.tar.gz \
+          gh release upload "${GITHUB_REF_NAME}" \
+            "bbs_${VERSION}_Linux_x86_64.tar.gz" \
+            "bbs_${VERSION}_Linux_arm64.tar.gz" \
             --clobber
