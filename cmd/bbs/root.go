@@ -19,9 +19,45 @@ var identityFlag string
 // globalStore holds the database connection for CLI commands
 var globalStore storage.Storage
 
+// commandRequiresGlobalStore reports whether cmd reads globalStore: post, edit, and every command
+// beneath the topic and thread namespaces. The bare namespaces only print help.
+func commandRequiresGlobalStore(cmd *cobra.Command) bool {
+	if cmd == postCmd || cmd == editCmd {
+		return true
+	}
+	for ancestor := cmd.Parent(); ancestor != nil; ancestor = ancestor.Parent() {
+		if ancestor == topicCmd || ancestor == threadCmd {
+			return true
+		}
+	}
+	return false
+}
+
+func closeGlobalStore() {
+	if globalStore == nil {
+		return
+	}
+	_ = globalStore.Close()
+	globalStore = nil
+}
+
+func runNamespaceHelp(cmd *cobra.Command, args []string) error {
+	return cmd.Help()
+}
+
+func setNoArgsDefaults(commands ...*cobra.Command) {
+	for _, command := range commands {
+		if command.Runnable() && command.Args == nil {
+			command.Args = cobra.NoArgs
+		}
+	}
+}
+
 var rootCmd = &cobra.Command{
-	Use:   "bbs",
-	Short: "A lightweight message board for humans and agents",
+	Use:           "bbs",
+	Short:         "A lightweight message board for humans and agents",
+	Args:          cobra.NoArgs,
+	SilenceErrors: true,
 	Long: `
 ██████╗ ██████╗ ███████╗
 ██╔══██╗██╔══██╗██╔════╝
@@ -50,12 +86,11 @@ Data is stored locally.`,
 		return tui.Run(store, identity.GetIdentity(identityFlag, "tui"))
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip init for help commands
-		if cmd.Name() == "help" || cmd.Name() == "version" {
+		if !commandRequiresGlobalStore(cmd) {
 			return nil
 		}
 
-		// Load config and initialize global store for subcommands
+		// Load config and initialize the shared store for storage-backed commands.
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
@@ -69,14 +104,12 @@ Data is stored locally.`,
 		return nil
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
-		if globalStore != nil {
-			globalStore.Close()
-			globalStore = nil
-		}
+		closeGlobalStore()
 		return nil
 	},
 }
 
 func init() {
+	setNoArgsDefaults(topicListCmd, versionCmd, whoamiCmd, mcpCmd, migrateCmd, installSkillCmd)
 	rootCmd.PersistentFlags().StringVar(&identityFlag, "as", "", "identity override (username)")
 }

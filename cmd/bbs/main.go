@@ -14,8 +14,13 @@ var (
 	date    = "unknown"
 )
 
+func executeRoot() error {
+	defer closeGlobalStore()
+	return rootCmd.Execute()
+}
+
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := executeRoot(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

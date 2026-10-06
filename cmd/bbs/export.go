@@ -29,6 +29,8 @@ Formats:
   markdown  - Human-readable markdown
   yaml      - Structured YAML backup
   json      - JSON backup`,
+	Args: cobra.NoArgs,
+	RunE: runNamespaceHelp,
 }
 
 var exportMarkdownCmd = &cobra.Command{
@@ -59,6 +61,8 @@ var importCmd = &cobra.Command{
 	Use:   "import",
 	Short: "Import BBS data",
 	Long:  "Import BBS data from various formats.",
+	Args:  cobra.NoArgs,
+	RunE:  runNamespaceHelp,
 }
 
 var importYAMLCmd = &cobra.Command{

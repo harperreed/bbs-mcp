@@ -19,6 +19,8 @@ var threadCmd = &cobra.Command{
 	Use:   "thread",
 	Short: "Manage threads",
 	Long:  "Create, list, and view threads within topics.",
+	Args:  cobra.NoArgs,
+	RunE:  runNamespaceHelp,
 }
 
 var threadListCmd = &cobra.Command{

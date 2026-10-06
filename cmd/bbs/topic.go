@@ -19,11 +19,13 @@ var topicCmd = &cobra.Command{
 	Use:   "topic",
 	Short: "Manage topics",
 	Long:  "Create, list, archive, and view topics on the board.",
+	Args:  cobra.NoArgs,
+	RunE:  runNamespaceHelp,
 }
 
 var topicListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all topics",
+	Short: "List active topics",
 	RunE:  runTopicList,
 }
 
@@ -57,7 +59,7 @@ func init() {
 	rootCmd.AddCommand(topicCmd)
 	topicCmd.AddCommand(topicListCmd, topicNewCmd, topicArchiveCmd, topicShowCmd)
 
-	topicListCmd.Flags().BoolVar(&showArchived, "archived", false, "show archived topics")
+	topicListCmd.Flags().BoolVar(&showArchived, "archived", false, "include archived topics")
 	topicArchiveCmd.Flags().BoolVar(&unarchive, "unarchive", false, "unarchive instead of archive")
 }
 
@@ -123,6 +125,12 @@ func runTopicShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("topic not found: %s", args[0])
 	}
+	// List threads before printing so an unreadable thread fails the command
+	// instead of rendering the topic as empty.
+	threads, err := globalStore.ListThreads(topic.ID)
+	if err != nil {
+		return fmt.Errorf("list threads for topic %s: %w", topic.Name, err)
+	}
 
 	fmt.Printf("Topic: %s\n", topic.Name)
 	fmt.Printf("Description: %s\n", topic.Description)
@@ -133,7 +141,6 @@ func runTopicShow(cmd *cobra.Command, args []string) error {
 	}
 
 	// Show recent threads
-	threads, _ := globalStore.ListThreads(topic.ID)
 	if len(threads) > 0 {
 		fmt.Printf("\nRecent threads (%d):\n", len(threads))
 		for i, t := range threads {

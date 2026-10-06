@@ -20,13 +20,17 @@ var migrateCmd = &cobra.Command{
 	Long: `Migrate all BBS data from the currently configured backend to a different backend.
 
 Reads topics, threads, messages, and attachments from the current backend
-and writes them to the target backend. Does NOT update the config file;
-verify the migration was successful then update config.json manually.
+and writes them to the target backend. The target directory defaults to the configured data directory,
+which usually contains the source backend, so use --data-dir to choose a separate destination.
+
+--force allows writes to a non-empty target, but it does not clear or replace existing data.
+Migration can merge non-colliding records and fail when IDs collide. The command does NOT
+update the config file; verify the migration was successful, then update config.json manually.
 
 Examples:
-  bbs migrate --to markdown
+  bbs migrate --to markdown --data-dir ~/bbs-markdown
   bbs migrate --to sqlite --data-dir ~/bbs-sqlite
-  bbs migrate --to markdown --force`,
+  bbs migrate --to markdown --data-dir ~/bbs-markdown --force`,
 	RunE: runMigrate,
 }
 
@@ -40,7 +44,7 @@ func init() {
 	rootCmd.AddCommand(migrateCmd)
 	migrateCmd.Flags().StringVar(&migrateTo, "to", "", "target backend (sqlite or markdown)")
 	migrateCmd.Flags().StringVar(&migrateDataDir, "data-dir", "", "target data directory (defaults to current config data_dir)")
-	migrateCmd.Flags().BoolVar(&migrateForce, "force", false, "allow writing into a non-empty target directory")
+	migrateCmd.Flags().BoolVar(&migrateForce, "force", false, "allow writing into a non-empty target directory without clearing it")
 	_ = migrateCmd.MarkFlagRequired("to")
 }
 
@@ -74,7 +78,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("check target directory: %w", err)
 	}
 	if nonEmpty && !migrateForce {
-		return fmt.Errorf("target directory %q is not empty; use --force to overwrite", targetDataDir)
+		return fmt.Errorf("target directory %q is not empty; use --force to allow writing without clearing existing data", targetDataDir)
 	}
 
 	// Open source storage

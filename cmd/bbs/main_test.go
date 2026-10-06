@@ -61,6 +61,9 @@ func TestTopicListCommand(t *testing.T) {
 	if topicListCmd.Use != "list" {
 		t.Errorf("Expected topic list command use to be 'list', got %q", topicListCmd.Use)
 	}
+	if topicListCmd.Short != "List active topics" {
+		t.Errorf("Expected topic list command to describe the default active-topic view, got %q", topicListCmd.Short)
+	}
 }
 
 func TestTopicNewCommand(t *testing.T) {
@@ -298,6 +301,43 @@ func TestRunTopicShowArchived(t *testing.T) {
 	err := runTopicShow(nil, []string{topic.Name})
 	if err != nil {
 		t.Errorf("runTopicShow failed: %v", err)
+	}
+}
+
+func TestRunTopicShowReportsUnreadableThreads(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := storage.NewMarkdownStore(dataDir)
+	if err != nil {
+		t.Fatalf("failed to create markdown store: %v", err)
+	}
+	oldStore := globalStore
+	globalStore = store
+	defer func() {
+		store.Close()
+		globalStore = oldStore
+	}()
+
+	topic := models.NewTopic("damaged", "Holds a corrupt thread file", "test@cli")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic: %v", err)
+	}
+	if err := store.CreateThread(models.NewThread(topic.ID, "Unreadable", "test@cli")); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	threadFiles, err := filepath.Glob(filepath.Join(dataDir, topic.Name, "*.md"))
+	if err != nil || len(threadFiles) != 1 {
+		t.Fatalf("expected one thread file, got %v (err %v)", threadFiles, err)
+	}
+	if err := os.WriteFile(threadFiles[0], []byte("---\nid: [unterminated\n---\n"), 0o600); err != nil {
+		t.Fatalf("corrupt thread file: %v", err)
+	}
+
+	err = runTopicShow(nil, []string{topic.Name})
+	if err == nil {
+		t.Fatal("expected topic show to report the unreadable thread instead of showing an empty topic")
+	}
+	if !strings.Contains(err.Error(), "list threads") {
+		t.Errorf("expected a thread listing error, got: %v", err)
 	}
 }
 
@@ -820,6 +860,10 @@ func TestShowArchivedFlag(t *testing.T) {
 	flag := topicListCmd.Flags().Lookup("archived")
 	if flag == nil {
 		t.Error("Expected --archived flag to be registered")
+		return
+	}
+	if flag.Usage != "include archived topics" {
+		t.Errorf("Expected --archived usage to describe including archived topics, got %q", flag.Usage)
 	}
 }
 
@@ -974,6 +1018,28 @@ func TestMigrateCommand(t *testing.T) {
 	}
 }
 
+func TestMigrateCommandDescribesTargetDirectoryBehavior(t *testing.T) {
+	for _, want := range []string{
+		"defaults to the configured data directory",
+		"--data-dir ~/bbs-markdown",
+		"--data-dir ~/bbs-sqlite",
+		"does not clear or replace existing data",
+		"fail when IDs collide",
+	} {
+		if !strings.Contains(migrateCmd.Long, want) {
+			t.Errorf("expected migrate command long description to contain %q, got:\n%s", want, migrateCmd.Long)
+		}
+	}
+
+	forceFlag := migrateCmd.Flags().Lookup("force")
+	if forceFlag == nil {
+		t.Fatal("expected migrate command to define --force")
+	}
+	if forceFlag.Usage != "allow writing into a non-empty target directory without clearing it" {
+		t.Errorf("expected --force usage to describe preserving existing data, got %q", forceFlag.Usage)
+	}
+}
+
 func TestRunMigrate(t *testing.T) {
 	_, cleanup := setupTestEnv(t)
 	defer cleanup()
@@ -1017,6 +1083,13 @@ func TestRunMigrate(t *testing.T) {
 	err = runMigrate(nil, nil)
 	if err == nil {
 		t.Error("expected error for non-empty target without --force")
+	} else {
+		if !strings.Contains(err.Error(), "allow writing without clearing existing data") {
+			t.Errorf("expected non-empty target error to describe --force accurately, got: %v", err)
+		}
+		if strings.Contains(err.Error(), "overwrite") {
+			t.Errorf("expected non-empty target error not to claim --force overwrites data, got: %v", err)
+		}
 	}
 
 	// Test: successful migration to markdown with a fresh data dir
