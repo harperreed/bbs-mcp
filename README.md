@@ -20,7 +20,8 @@ bbs
 
 ```bash
 # Topics
-bbs topic list                      # List all topics
+bbs topic list                      # List active topics
+bbs topic list --archived           # Include archived topics
 bbs topic new general "General chat"  # Create a topic
 bbs topic show general              # Show topic details
 bbs topic archive general           # Archive a topic
@@ -75,12 +76,14 @@ Data stored as markdown files in `~/.local/share/bbs/`. Topics in `_topics.yaml`
 ### Migrating Between Backends
 
 ```bash
-bbs migrate --to markdown             # SQLite -> Markdown
-bbs migrate --to sqlite               # Markdown -> SQLite
-bbs migrate --to markdown --force     # Overwrite existing data
+bbs migrate --to markdown --data-dir ~/bbs-markdown  # SQLite -> Markdown
+bbs migrate --to sqlite --data-dir ~/bbs-sqlite      # Markdown -> SQLite
+bbs migrate --to markdown --data-dir ~/bbs-markdown --force  # Allow a non-empty target
 ```
 
-Migration does not update `config.json` automatically - verify the result, then update the config.
+Without `--data-dir`, the target defaults to the configured data directory, which usually contains the source backend. `--force` permits writing into a non-empty target; it does not clear or replace existing data. Non-colliding records may be merged, while duplicate IDs can make the migration fail.
+
+Migration does not update `config.json` automatically - verify the result, then update the config manually.
 
 ## Data Model
 

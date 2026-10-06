@@ -43,7 +43,7 @@ Identity format: `username@source` (cli, tui, mcp)
 
 - Config: `~/.config/bbs/config.json`
 - SQLite data: `~/.local/share/bbs/bbs.db`
-- Markdown data: `~/.local/share/bbs/` (topics.yaml + thread .md files)
+- Markdown data: `~/.local/share/bbs/` (`_topics.yaml` + thread `.md` files)
 
 ## Export/Import
 
