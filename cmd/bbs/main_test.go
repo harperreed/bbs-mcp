@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/harper/bbs/internal/config"
 	"github.com/harper/bbs/internal/models"
 	"github.com/harper/bbs/internal/storage"
 )
@@ -1044,9 +1045,8 @@ func TestRunMigrate(t *testing.T) {
 	_, cleanup := setupTestEnv(t)
 	defer cleanup()
 
-	// Set up a temporary config directory so config.Load returns defaults (sqlite)
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	// Select SQLite explicitly; a fresh config would default new users to Markdown.
+	writeTestConfig(t, "sqlite")
 
 	// Test: missing --to flag (empty string) should fail
 	oldTo := migrateTo
@@ -1610,12 +1610,23 @@ func TestBuildExportDataEmpty(t *testing.T) {
 }
 
 // setupXDGTestEnv sets up a test environment that uses XDG_DATA_HOME
-// to redirect the database path. Returns cleanup function.
+// to redirect the database path, with an isolated config selecting the
+// SQLite backend these tests seed through storage.DefaultDBPath.
+// Returns cleanup function.
 func setupXDGTestEnv(t *testing.T) func() {
 	t.Helper()
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	writeTestConfig(t, "sqlite")
 	return func() {}
+}
+
+// writeTestConfig points XDG_CONFIG_HOME at a fresh directory holding a config for backend.
+func writeTestConfig(t *testing.T, backend string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := (&config.Config{Backend: backend}).Save(); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
 }
 
 func TestRunExportMarkdown(t *testing.T) {
