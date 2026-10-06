@@ -4,9 +4,11 @@
 package tui
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
@@ -154,7 +156,7 @@ func TestModelUpdateComposing(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
-	model := NewModel(store, "test@tui")
+	model, _, _ := replyReadyModel(t, store, "test@tui")
 
 	// Press 'n' to start composing
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
@@ -186,6 +188,742 @@ func TestModelUpdateComposing(t *testing.T) {
 	m = newModel.(Model)
 	if m.composing {
 		t.Error("Expected composing to be false after escape")
+	}
+}
+
+func TestModelReplyIsOnlyAvailableForAnOpenedThreadInMessagesPane(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, _ := replyReadyModel(t, store, "test@tui")
+	model.loadedThreadID = uuid.Nil
+	for _, pane := range []Pane{TopicsPane, ThreadsPane, MessagesPane} {
+		model.activePane = pane
+		newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+		updated := newModel.(Model)
+		if updated.composing || cmd != nil {
+			t.Errorf("Expected n to be inert in pane %d without an opened thread", pane)
+		}
+	}
+
+	model.loadedThreadID = model.threads.Selected().ID
+	for _, pane := range []Pane{TopicsPane, ThreadsPane} {
+		model.activePane = pane
+		newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+		updated := newModel.(Model)
+		if updated.composing || cmd != nil {
+			t.Errorf("Expected n to be inert outside Messages pane, got composing in pane %d", pane)
+		}
+	}
+}
+
+func TestModelReplyEmptyEnterKeepsCompositionOpen(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, _ := replyReadyModel(t, store, "test@tui")
+	model.composing = true
+	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := newModel.(Model)
+	if cmd != nil {
+		t.Fatal("Expected empty reply not to issue a persistence command")
+	}
+	if !updated.composing {
+		t.Fatal("Expected empty reply to remain in compose mode")
+	}
+}
+
+func TestModelReplyPersistsWithIdentityAndRefreshesState(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, topic, thread := replyReadyModel(t, store, "doctor-biz")
+	model.composing = true
+	model.composeText = "Fresh reply 🚀"
+
+	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if cmd == nil {
+		t.Fatal("Expected non-empty reply to issue a persistence command")
+	}
+	if !pending.composing || pending.composeText != "Fresh reply 🚀" {
+		t.Fatal("Expected draft to remain recoverable until persistence succeeds")
+	}
+
+	result := cmd()
+	newModel, refreshCmd := pending.Update(result)
+	updated := newModel.(Model)
+	if updated.composing || updated.composeText != "" {
+		t.Fatal("Expected successful persistence to close and clear composition")
+	}
+	if updated.err != nil {
+		t.Fatalf("Expected no error after successful reply, got %v", updated.err)
+	}
+	if refreshCmd == nil {
+		t.Fatal("Expected persistence completion to start refresh")
+	}
+	if !updated.threadsLoading || !updated.messagesLoading {
+		t.Fatal("Expected post-submit refresh to mark threads and messages as loading")
+	}
+	if len(updated.threads.threads) != 0 || len(updated.messages.messages) != 0 || updated.canReply() {
+		t.Fatal("Expected post-submit refresh to invalidate stale rows and reply eligibility")
+	}
+	newModel, _ = updated.Update(refreshCmd())
+	updated = newModel.(Model)
+	if len(updated.messages.messages) != 2 || updated.messages.messages[1].Content != "Fresh reply 🚀" {
+		t.Fatalf("Expected refreshed messages to contain reply, got %#v", updated.messages.messages)
+	}
+	if updated.messages.messages[1].CreatedBy != "doctor-biz" {
+		t.Errorf("Expected active identity doctor-biz, got %q", updated.messages.messages[1].CreatedBy)
+	}
+	if updated.messages.scroll != 1 {
+		t.Errorf("Expected resulting reply to be rendered, got scroll %d", updated.messages.scroll)
+	}
+	if selected := updated.threads.Selected(); selected == nil || selected.ID != thread.ID {
+		t.Fatalf("Expected replied-to thread to remain selected, got %#v", selected)
+	}
+	if !updated.threads.Selected().UpdatedAt.After(thread.UpdatedAt) {
+		t.Errorf("Expected refreshed thread activity after %s, got %s", thread.UpdatedAt, updated.threads.Selected().UpdatedAt)
+	}
+
+	persisted, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(persisted) != 2 || persisted[1].CreatedBy != "doctor-biz" || persisted[1].Content != "Fresh reply 🚀" {
+		t.Fatalf("Expected reply in real storage, got %#v", persisted)
+	}
+	threads, err := store.ListThreads(topic.ID)
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(threads) != 1 || !threads[0].UpdatedAt.After(thread.UpdatedAt) {
+		t.Fatalf("Expected persisted thread activity refresh, got %#v", threads)
+	}
+}
+
+func TestModelReplyFailureIsVisibleAndRecoverable(t *testing.T) {
+	store := newTestStore(t)
+	model, _, _ := replyReadyModel(t, store, "test@tui")
+	model.width = 100
+	model.height = 30
+	model.composing = true
+	model.composeText = "keep this draft"
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if cmd == nil {
+		t.Fatal("Expected persistence command")
+	}
+	result := cmd()
+	newModel, _ = pending.Update(result)
+	updated := newModel.(Model)
+	if !updated.composing || updated.composeText != "keep this draft" {
+		t.Fatal("Expected failed reply draft to remain recoverable")
+	}
+	if updated.err == nil || !strings.Contains(updated.View(), "Error:") {
+		t.Fatalf("Expected visible persistence error, got %q", updated.View())
+	}
+}
+
+func TestModelReplyAllowsOnlyOneSubmissionWhilePersistenceIsInFlight(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, thread := replyReadyModel(t, store, "doctor-biz")
+	model.composing = true
+	model.composeText = "exactly once"
+
+	newModel, persistCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if persistCmd == nil {
+		t.Fatal("Expected persistence command")
+	}
+	newModel, duplicateCmd := pending.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending = newModel.(Model)
+	if duplicateCmd != nil {
+		t.Fatal("Expected repeated Enter to be inert while persistence is in flight")
+	}
+	newModel, _ = pending.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" newer draft")})
+	pending = newModel.(Model)
+	if pending.composeText != "exactly once" {
+		t.Fatalf("Expected typing to be inert while persistence is in flight, got %q", pending.composeText)
+	}
+
+	newModel, refreshCmd := pending.Update(persistCmd())
+	updated := newModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("Expected persistence completion to start a distinct refresh command")
+	}
+	_, _ = updated.Update(refreshCmd())
+	persisted, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(persisted) != 2 || persisted[1].Content != "exactly once" {
+		t.Fatalf("Expected exactly one persisted reply, got %#v", persisted)
+	}
+}
+
+func TestModelReplyIgnoresStaleCompletionAndPreservesCtrlCWhilePosting(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, thread := replyReadyModel(t, store, "doctor-biz")
+	model.composing = true
+	model.composeText = "current draft"
+	model.posting = true
+	model.replyPost = 2
+
+	newModel, cmd := model.Update(replyPersistedMsg{requestID: 1, threadID: thread.ID, topicID: thread.TopicID})
+	updated := newModel.(Model)
+	if cmd != nil || !updated.posting || !updated.composing || updated.composeText != "current draft" {
+		t.Fatal("Expected stale persistence success not to mutate the active submission")
+	}
+	newModel, _ = updated.Update(replyPersistenceFailedMsg{requestID: 1, err: errors.New("stale failure")})
+	updated = newModel.(Model)
+	if !updated.posting || updated.err != nil {
+		t.Fatal("Expected stale persistence failure not to mutate the active submission")
+	}
+	_, quitCmd := updated.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if quitCmd == nil {
+		t.Fatal("Expected Ctrl-C to quit while persistence is in flight")
+	}
+	if _, ok := quitCmd().(tea.QuitMsg); !ok {
+		t.Fatalf("Expected tea.QuitMsg, got %T", quitCmd())
+	}
+}
+
+func TestModelReplyPersistenceSuccessIsNotRetryableWhenRefreshFails(t *testing.T) {
+	store := newTestStore(t)
+	model, _, thread := replyReadyModel(t, store, "doctor-biz")
+	model.composing = true
+	model.composeText = "persist before refresh"
+
+	newModel, persistCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if persistCmd == nil {
+		t.Fatal("Expected persistence command")
+	}
+	persistedResult := persistCmd()
+	persisted, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages before refresh failure: %v", err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("Expected reply persisted before refresh, got %d messages", len(persisted))
+	}
+
+	newModel, refreshCmd := pending.Update(persistedResult)
+	posted := newModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("Expected a distinct refresh command after persistence")
+	}
+	if posted.composing || posted.composeText != "" {
+		t.Fatal("Expected persistence success to close and clear composition before refresh")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	newModel, _ = posted.Update(refreshCmd())
+	failedRefresh := newModel.(Model)
+	if failedRefresh.composing {
+		t.Fatal("Expected refresh failure not to reopen retryable submission")
+	}
+	if failedRefresh.err == nil || !strings.Contains(failedRefresh.err.Error(), "posted, refresh failed") {
+		t.Fatalf("Expected accurate posted refresh failure, got %v", failedRefresh.err)
+	}
+	_, manualRefreshCmd := failedRefresh.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if manualRefreshCmd == nil {
+		t.Fatal("Expected manual refresh to remain available without reposting")
+	}
+}
+
+func TestModelManualRefreshFailureClearsPendingLoadingState(t *testing.T) {
+	store := newTestStore(t)
+	model, _, _ := replyReadyModel(t, store, "doctor-biz")
+	model.width = 100
+	model.height = 30
+
+	newModel, refreshCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	pending := newModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("Expected manual refresh command")
+	}
+	if !pending.threadsLoading || !pending.messagesLoading {
+		t.Fatal("Expected manual refresh to mark threads and messages as loading")
+	}
+	if len(pending.threads.threads) != 0 || len(pending.messages.messages) != 0 || pending.canReply() {
+		t.Fatal("Expected manual refresh to invalidate stale rows and reply eligibility")
+	}
+	if view := pending.View(); !strings.Contains(view, "Loading threads") || !strings.Contains(view, "Loading messages") || strings.Contains(view, "[n] reply") {
+		t.Fatalf("Expected truthful loading view without reply help, got %q", view)
+	}
+	newModel, staleReplyCmd := pending.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	pending = newModel.(Model)
+	if pending.composing || staleReplyCmd != nil {
+		t.Fatal("Expected n to be inert while refresh invalidates the selected rows")
+	}
+	newModel, staleSelectionCmd := pending.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending = newModel.(Model)
+	if staleSelectionCmd != nil {
+		t.Fatal("Expected Enter to be inert while refresh invalidates the selected rows")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	newModel, _ = pending.Update(refreshCmd())
+	failed := newModel.(Model)
+	if failed.messagesLoading || failed.threadsLoading {
+		t.Fatal("Expected matching refresh failure to clear pending loading indicators")
+	}
+	if failed.err == nil || !strings.Contains(failed.err.Error(), "refresh failed") {
+		t.Fatalf("Expected visible refresh failure, got %v", failed.err)
+	}
+}
+
+func TestModelManualRefreshSuccessRestoresCurrentSelectionAndReplyEligibility(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, thread := replyReadyModel(t, store, "doctor-biz")
+	newModel, refreshCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	pending := newModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("Expected manual refresh command")
+	}
+
+	newModel, _ = pending.Update(refreshCmd())
+	refreshed := newModel.(Model)
+	if refreshed.threadsLoading || refreshed.messagesLoading {
+		t.Fatal("Expected matching refresh success to clear loading indicators")
+	}
+	if selected := refreshed.threads.Selected(); selected == nil || selected.ID != thread.ID {
+		t.Fatalf("Expected refresh to restore the current thread selection, got %#v", selected)
+	}
+	if len(refreshed.messages.messages) != 1 || !refreshed.canReply() {
+		t.Fatalf("Expected refresh to restore current messages and reply eligibility, got %#v", refreshed.messages.messages)
+	}
+}
+
+func TestModelRefreshScopesMatchFocusedPane(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	topicsModel, topic, _ := replyReadyModel(t, store, "doctor-biz")
+	topicsModel.threads.topicID = topic.ID
+	topicsModel.activePane = TopicsPane
+	newModel, topicsCmd := topicsModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	topicsPending := newModel.(Model)
+	if topicsCmd == nil {
+		t.Fatal("Expected Topics refresh command")
+	}
+	if len(topicsPending.threads.threads) != 1 || len(topicsPending.messages.messages) != 1 {
+		t.Fatal("Expected Topics refresh to preserve the independently selected thread state")
+	}
+
+	threadsModel := topicsModel
+	threadsModel.activePane = ThreadsPane
+	newModel, threadsCmd := threadsModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	threadsPending := newModel.(Model)
+	if threadsCmd == nil {
+		t.Fatal("Expected Threads refresh command")
+	}
+	if len(threadsPending.threads.threads) != 0 || len(threadsPending.messages.messages) != 0 {
+		t.Fatal("Expected Threads refresh to invalidate thread rows and dependent messages")
+	}
+	if threadsPending.selectedThreadID != (models.UUID{}) || threadsPending.loadedThreadID != (models.UUID{}) || threadsPending.messages.threadID != (models.UUID{}) {
+		t.Fatal("Expected Threads refresh to clear dependent selection identity")
+	}
+	if !threadsPending.threadsLoading || threadsPending.messagesLoading || threadsPending.canReply() {
+		t.Fatal("Expected only the Threads pane to load with reply eligibility disabled")
+	}
+}
+
+func TestModelStateRefreshIgnoresStaleSuccessAndFailureUntilCurrentCompletion(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, _ := replyReadyModel(t, store, "doctor-biz")
+	newModel, firstCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	firstPending := newModel.(Model)
+	firstResult := firstCmd()
+	firstRequestID := firstPending.threadLoad
+
+	newModel, secondCmd := firstPending.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	secondPending := newModel.(Model)
+	newModel, _ = secondPending.Update(firstResult)
+	stillPending := newModel.(Model)
+	if !stillPending.threadsLoading || !stillPending.messagesLoading || stillPending.err != nil {
+		t.Fatal("Expected stale refresh success not to complete the current refresh")
+	}
+	newModel, _ = stillPending.Update(stateRefreshFailedMsg{
+		requestID: firstRequestID,
+		threadID:  stillPending.selectedThreadID,
+		err:       errors.New("stale refresh failure"),
+	})
+	stillPending = newModel.(Model)
+	if !stillPending.threadsLoading || !stillPending.messagesLoading || stillPending.err != nil {
+		t.Fatal("Expected stale refresh failure not to complete the current refresh")
+	}
+
+	newModel, _ = stillPending.Update(secondCmd())
+	refreshed := newModel.(Model)
+	if refreshed.threadsLoading || refreshed.messagesLoading || refreshed.err != nil || !refreshed.canReply() {
+		t.Fatal("Expected matching refresh success to complete loading and restore reply eligibility")
+	}
+}
+
+func TestModelRefreshMissingThreadClearsDependentMessageSelection(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, topic, thread := replyReadyModel(t, store, "doctor-biz")
+	requestID := model.newRequestID()
+	model.threadLoad = requestID
+	model.messageLoad = requestID
+	model.threadsLoading = true
+	model.messagesLoading = true
+	replacement := models.NewThread(topic.ID, "Replacement thread", "seed@tui")
+
+	newModel, _ := model.Update(stateRefreshLoadedMsg{
+		requestID: requestID,
+		threadID:  thread.ID,
+		threads:   []*models.Thread{replacement},
+		messages:  []*models.Message{models.NewMessage(thread.ID, "orphaned stale row", "seed@tui")},
+	})
+	refreshed := newModel.(Model)
+	if selected := refreshed.threads.Selected(); selected == nil || selected.ID != replacement.ID {
+		t.Fatalf("Expected safe fallback to the available thread row, got %#v", selected)
+	}
+	if refreshed.selectedThreadID != (models.UUID{}) || refreshed.loadedThreadID != (models.UUID{}) || refreshed.messages.threadID != (models.UUID{}) {
+		t.Fatal("Expected missing refreshed selection to clear dependent message identity")
+	}
+	if len(refreshed.messages.messages) != 0 || refreshed.canReply() {
+		t.Fatal("Expected missing refreshed selection to discard orphaned messages and reply eligibility")
+	}
+	if refreshed.threadsLoading || refreshed.messagesLoading {
+		t.Fatal("Expected matching refresh completion to clear loading indicators")
+	}
+}
+
+func TestModelIgnoresOutOfOrderThreadLoads(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	firstTopic := models.NewTopic("First", "", "seed@tui")
+	secondTopic := models.NewTopic("Second", "", "seed@tui")
+	for _, topic := range []*models.Topic{firstTopic, secondTopic} {
+		if err := store.CreateTopic(topic); err != nil {
+			t.Fatalf("CreateTopic: %v", err)
+		}
+	}
+	firstThread := models.NewThread(firstTopic.ID, "First thread", "seed@tui")
+	secondThread := models.NewThread(secondTopic.ID, "Second thread", "seed@tui")
+	for _, thread := range []*models.Thread{firstThread, secondThread} {
+		if err := store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread: %v", err)
+		}
+	}
+
+	model := NewModel(store, "test@tui")
+	model.topics.SetTopics([]*models.Topic{firstTopic, secondTopic})
+	newModel, firstCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = newModel.(Model)
+	model.activePane = TopicsPane
+	model.topics.MoveDown()
+	newModel, secondCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = newModel.(Model)
+	newModel, _ = model.Update(secondCmd())
+	model = newModel.(Model)
+	newModel, _ = model.Update(firstCmd())
+	model = newModel.(Model)
+	if selected := model.threads.Selected(); selected == nil || selected.ID != secondThread.ID {
+		t.Fatalf("Expected stale first topic load ignored, got %#v", selected)
+	}
+}
+
+func TestModelPendingTopicLoadCannotSelectOrReplyToPriorTopicThread(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	firstTopic := models.NewTopic("Alpha", "", "seed@tui")
+	secondTopic := models.NewTopic("Beta", "", "seed@tui")
+	for _, topic := range []*models.Topic{firstTopic, secondTopic} {
+		if err := store.CreateTopic(topic); err != nil {
+			t.Fatalf("CreateTopic: %v", err)
+		}
+	}
+	firstThread := models.NewThread(firstTopic.ID, "Alpha thread", "seed@tui")
+	secondThread := models.NewThread(secondTopic.ID, "Beta thread", "seed@tui")
+	for _, thread := range []*models.Thread{firstThread, secondThread} {
+		if err := store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread: %v", err)
+		}
+	}
+	firstMessage := models.NewMessage(firstThread.ID, "Alpha message", "seed@tui")
+	if err := store.CreateMessage(firstMessage); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+
+	model := NewModel(store, "doctor-biz")
+	model.width = 100
+	model.height = 30
+	model.topics.SetTopics([]*models.Topic{firstTopic, secondTopic})
+	model.topics.MoveDown()
+	model.threads.SetThreads([]*models.Thread{firstThread})
+	model.threads.topicID = firstTopic.ID
+	model.messages.SetMessages([]*models.Message{firstMessage})
+	model.messages.threadID = firstThread.ID
+	model.selectedThreadID = firstThread.ID
+	model.loadedThreadID = firstThread.ID
+	model.activePane = TopicsPane
+
+	newModel, secondTopicThreadsCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	pendingView := pending.View()
+	if strings.Contains(pendingView, "Alpha thread") || !strings.Contains(pendingView, "Loading threads") {
+		t.Errorf("Expected truthful loading view without prior topic thread, got %q", pendingView)
+	}
+
+	newModel, staleMessageCmd := pending.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending = newModel.(Model)
+	if staleMessageCmd != nil {
+		newModel, _ = pending.Update(staleMessageCmd())
+		pending = newModel.(Model)
+		newModel, _ = pending.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+		pending = newModel.(Model)
+		newModel, _ = pending.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("wrong thread reply")})
+		pending = newModel.(Model)
+		newModel, wrongPostCmd := pending.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		pending = newModel.(Model)
+		if wrongPostCmd != nil {
+			newModel, _ = pending.Update(wrongPostCmd())
+			pending = newModel.(Model)
+		}
+	}
+	newModel, _ = pending.Update(secondTopicThreadsCmd())
+	updated := newModel.(Model)
+
+	firstMessages, err := store.ListMessages(firstThread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if staleMessageCmd != nil {
+		t.Error("Expected Enter to be inert while the new topic's threads are loading")
+	}
+	if len(firstMessages) != 1 {
+		t.Fatalf("Expected zero wrong-thread writes, got %#v", firstMessages)
+	}
+	if selected := updated.threads.Selected(); selected == nil || selected.ID != secondThread.ID {
+		t.Fatalf("Expected second topic thread after delayed load, got %#v", selected)
+	}
+}
+
+func TestModelPendingMessageLoadHidesPriorThreadMessagesAndReplyHelp(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, topic, firstThread := replyReadyModel(t, store, "doctor-biz")
+	secondThread := models.NewThread(topic.ID, "Second thread", "seed@tui")
+	if err := store.CreateThread(secondThread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	secondMessage := models.NewMessage(secondThread.ID, "Second message", "seed@tui")
+	if err := store.CreateMessage(secondMessage); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	model.width = 100
+	model.height = 30
+	model.threads.SetThreads([]*models.Thread{firstThread, secondThread})
+	model.threads.MoveDown()
+	model.activePane = ThreadsPane
+
+	newModel, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	view := pending.View()
+	if strings.Contains(view, "Initial message") || !strings.Contains(view, "Loading messages") {
+		t.Fatalf("Expected truthful loading view without prior thread messages, got %q", view)
+	}
+	if strings.Contains(view, "[n] reply") || pending.canReply() {
+		t.Fatal("Expected reply to remain unavailable until selected thread messages load")
+	}
+}
+
+func TestModelIgnoresOutOfOrderMessageLoadsForThreadSelection(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, topic, firstThread := replyReadyModel(t, store, "test@tui")
+	secondThread := models.NewThread(topic.ID, "Second thread", "seed@tui")
+	if err := store.CreateThread(secondThread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	secondMessage := models.NewMessage(secondThread.ID, "Second thread message", "seed@tui")
+	if err := store.CreateMessage(secondMessage); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	model.threads.SetThreads([]*models.Thread{firstThread, secondThread})
+	model.activePane = ThreadsPane
+	newModel, firstCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = newModel.(Model)
+	model.activePane = ThreadsPane
+	model.threads.MoveDown()
+	newModel, secondCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = newModel.(Model)
+	newModel, _ = model.Update(secondCmd())
+	model = newModel.(Model)
+	newModel, _ = model.Update(firstCmd())
+	model = newModel.(Model)
+	if len(model.messages.messages) != 1 || model.messages.messages[0].ThreadID != secondThread.ID {
+		t.Fatalf("Expected stale first thread load ignored, got %#v", model.messages.messages)
+	}
+	if !model.canReply() {
+		t.Fatal("Expected reply available only for the newest loaded thread selection")
+	}
+}
+
+func TestModelThreadLoadFailureIsVisible(t *testing.T) {
+	store := newTestStore(t)
+	model, _, _ := replyReadyModel(t, store, "test@tui")
+	model.width = 100
+	model.height = 30
+	model.activePane = TopicsPane
+
+	newModel, loadThreadsCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if loadThreadsCmd == nil {
+		t.Fatal("Expected thread load command")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	newModel, _ = pending.Update(loadThreadsCmd())
+	updated := newModel.(Model)
+	if updated.threadsLoading {
+		t.Error("Expected failed thread load to stop loading")
+	}
+	if updated.err == nil || !strings.Contains(updated.View(), "Error:") {
+		t.Fatalf("Expected visible thread load error, got %q", updated.View())
+	}
+}
+
+func TestModelMessageLoadFailureIsVisibleAndBlocksReply(t *testing.T) {
+	store := newTestStore(t)
+	model, _, _ := replyReadyModel(t, store, "test@tui")
+	model.width = 100
+	model.height = 30
+	model.activePane = ThreadsPane
+
+	newModel, loadMessagesCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if loadMessagesCmd == nil {
+		t.Fatal("Expected message load command")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	newModel, _ = pending.Update(loadMessagesCmd())
+	updated := newModel.(Model)
+	if updated.messagesLoading {
+		t.Error("Expected failed message load to stop loading")
+	}
+	if updated.canReply() {
+		t.Error("Expected reply unavailable when the selected thread's messages failed to load")
+	}
+	if updated.err == nil || !strings.Contains(updated.View(), "Error:") {
+		t.Fatalf("Expected visible message load error, got %q", updated.View())
+	}
+}
+
+func TestModelIgnoresStalePreReplyMessageLoadAfterReplyRefresh(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, _ := replyReadyModel(t, store, "doctor-biz")
+	newModel, staleLoadCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model = newModel.(Model)
+	staleLoadResult := staleLoadCmd()
+	newModel, _ = model.Update(staleLoadResult)
+	model = newModel.(Model)
+	model.composing = true
+	model.composeText = "new reply wins"
+	newModel, persistCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = newModel.(Model)
+	newModel, refreshCmd := model.Update(persistCmd())
+	model = newModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("Expected persistence completion to start refresh")
+	}
+	newModel, _ = model.Update(refreshCmd())
+	model = newModel.(Model)
+	newModel, _ = model.Update(staleLoadResult)
+	model = newModel.(Model)
+	if len(model.messages.messages) != 2 || model.messages.messages[1].Content != "new reply wins" {
+		t.Fatalf("Expected stale pre-reply load ignored after refresh, got %#v", model.messages.messages)
+	}
+}
+
+func TestModelViewAdvertisesReplyOnlyWhenAvailable(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, _, _ := replyReadyModel(t, store, "test@tui")
+	model.width = 100
+	model.height = 30
+	model.activePane = TopicsPane
+	if view := model.View(); strings.Contains(view, "[n] reply") {
+		t.Fatalf("Expected no reply help outside Messages pane, got %q", view)
+	}
+	model.activePane = MessagesPane
+	if view := model.View(); !strings.Contains(view, "[n] reply") {
+		t.Fatalf("Expected contextual reply help, got %q", view)
+	}
+	model.loadedThreadID = uuid.Nil
+	if view := model.View(); strings.Contains(view, "[n] reply") {
+		t.Fatalf("Expected no reply help without an opened thread, got %q", view)
+	}
+}
+
+func TestModelUpdateComposingAcceptsUnicodeAndBackspacesOneRune(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model := NewModel(store, "test@tui")
+	model.composing = true
+
+	typeMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("é界🙂")}
+	newModel, _ := model.Update(typeMsg)
+	m := newModel.(Model)
+	if m.composeText != "é界🙂" {
+		t.Fatalf("Expected Unicode compose text %q, got %q", "é界🙂", m.composeText)
+	}
+
+	backspaceMsg := tea.KeyMsg{Type: tea.KeyBackspace}
+	newModel, _ = m.Update(backspaceMsg)
+	m = newModel.(Model)
+	if m.composeText != "é界" {
+		t.Errorf("Expected backspace to remove one full rune, got %q", m.composeText)
+	}
+}
+
+func TestModelUpdateCtrlCQuitsWhileComposing(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model := NewModel(store, "test@tui")
+	model.composing = true
+	model.composeText = "draft"
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("Expected ctrl+c to return a quit command while composing")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("Expected tea.QuitMsg, got %T", cmd())
 	}
 }
 
@@ -236,6 +974,24 @@ func TestModelViewWithSize(t *testing.T) {
 	}
 }
 
+func TestModelViewRendersErrorWithoutReplacingStatus(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model := NewModel(store, "test@tui")
+	model.width = 100
+	model.height = 50
+	model.err = errors.New("storage unavailable")
+
+	view := model.View()
+	if !strings.Contains(view, "Error: storage unavailable") {
+		t.Errorf("Expected view to contain the current error, got %q", view)
+	}
+	if !strings.Contains(view, "switch pane") {
+		t.Error("Expected error view to preserve the navigation status")
+	}
+}
+
 func TestModelTopicsLoadedMsg(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
@@ -256,45 +1012,208 @@ func TestModelTopicsLoadedMsg(t *testing.T) {
 	}
 }
 
-func TestModelThreadsLoadedMsg(t *testing.T) {
+func TestModelTopicsRefreshPreservesSelectedTopicIdentityAcrossSortedInsertion(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
-	model := NewModel(store, "test@tui")
-
-	topicID := uuid.New()
-	threads := []*models.Thread{
-		models.NewThread(topicID, "Thread 1", "test@tui"),
-		models.NewThread(topicID, "Thread 2", "test@tui"),
+	model, topic, thread := replyReadyModel(t, store, "doctor-biz")
+	model.threads.topicID = topic.ID
+	earlier := models.NewTopic("Alpha topic", "Sorts before the selected topic", "seed@tui")
+	if err := store.CreateTopic(earlier); err != nil {
+		t.Fatalf("CreateTopic: %v", err)
 	}
+	model.activePane = TopicsPane
 
-	msg := ThreadsLoadedMsg{Threads: threads}
-	newModel, _ := model.Update(msg)
-	m := newModel.(Model)
+	newModel, refreshCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	pending := newModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("Expected Topics refresh command")
+	}
+	newModel, _ = pending.Update(refreshCmd())
+	refreshed := newModel.(Model)
 
-	if len(m.threads.threads) != 2 {
-		t.Errorf("Expected 2 threads, got %d", len(m.threads.threads))
+	if selected := refreshed.topics.Selected(); selected == nil || selected.ID != topic.ID {
+		t.Fatalf("Expected selected topic UUID %s after sorted insertion, got %#v", topic.ID, selected)
+	}
+	if refreshed.topics.cursor != 1 {
+		t.Fatalf("Expected cursor to follow selected topic to index 1, got %d", refreshed.topics.cursor)
+	}
+	if refreshed.threads.topicID != topic.ID {
+		t.Fatalf("Expected dependent thread topic UUID %s, got %s", topic.ID, refreshed.threads.topicID)
+	}
+	if selected := refreshed.threads.Selected(); selected == nil || selected.ID != thread.ID {
+		t.Fatalf("Expected opened thread to remain coherent, got %#v", selected)
+	}
+	if len(refreshed.messages.messages) != 1 || refreshed.messages.messages[0].ThreadID != thread.ID {
+		t.Fatalf("Expected opened messages to remain coherent, got %#v", refreshed.messages.messages)
+	}
+	refreshed.activePane = MessagesPane
+	if !refreshed.canReply() {
+		t.Fatal("Expected preserved dependent state to remain reply eligible in Messages pane")
 	}
 }
 
-func TestModelMessagesLoadedMsg(t *testing.T) {
+func TestModelTopicsRefreshClearsDependentStateWhenSelectedTopicIsArchived(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
-	model := NewModel(store, "test@tui")
-
-	threadID := uuid.New()
-	messages := []*models.Message{
-		models.NewMessage(threadID, "Message 1", "test@tui"),
-		models.NewMessage(threadID, "Message 2", "test@tui"),
+	model, topic, thread := replyReadyModel(t, store, "doctor-biz")
+	model.threads.topicID = topic.ID
+	replacement := models.NewTopic("Replacement topic", "Remains active", "seed@tui")
+	if err := store.CreateTopic(replacement); err != nil {
+		t.Fatalf("CreateTopic: %v", err)
+	}
+	if err := store.ArchiveTopic(topic.ID, true); err != nil {
+		t.Fatalf("ArchiveTopic: %v", err)
 	}
 
-	msg := MessagesLoadedMsg{Messages: messages}
-	newModel, _ := model.Update(msg)
-	m := newModel.(Model)
+	model.composing = true
+	model.composeText = "orphaned draft"
+	model.err = errors.New("orphaned reply error")
+	staleThreadModel := model
+	staleThreadCmd := staleThreadModel.beginThreadLoad(topic.ID)
+	staleMessageModel := staleThreadModel
+	staleMessageCmd := staleMessageModel.beginMessageLoad(thread.ID)
+	model.nextRequest = staleMessageModel.nextRequest
+	model.threadLoad = staleThreadModel.threadLoad
+	model.messageLoad = staleMessageModel.messageLoad
+	model.activePane = TopicsPane
+	refreshCmd := model.topics.LoadTopics()
+	newModel, _ := model.Update(refreshCmd())
+	refreshed := newModel.(Model)
 
-	if len(m.messages.messages) != 2 {
-		t.Errorf("Expected 2 messages, got %d", len(m.messages.messages))
+	if selected := refreshed.topics.Selected(); selected == nil || selected.ID != replacement.ID {
+		t.Fatalf("Expected cursor fallback to the remaining active topic, got %#v", selected)
+	}
+	if refreshed.threads.topicID != (models.UUID{}) || refreshed.selectedThreadID != (models.UUID{}) ||
+		refreshed.loadedThreadID != (models.UUID{}) || refreshed.messages.threadID != (models.UUID{}) {
+		t.Fatal("Expected removed topic refresh to clear dependent topic, thread, and message identities")
+	}
+	if len(refreshed.threads.threads) != 0 || len(refreshed.messages.messages) != 0 {
+		t.Fatalf("Expected removed topic refresh to clear dependent rows, got threads=%#v messages=%#v", refreshed.threads.threads, refreshed.messages.messages)
+	}
+	if refreshed.threadsLoading || refreshed.messagesLoading || refreshed.canReply() {
+		t.Fatal("Expected removed topic refresh to clear loading state and reply eligibility")
+	}
+	if refreshed.composing || refreshed.composeText != "" || refreshed.posting || refreshed.replyPost != 0 || refreshed.err != nil {
+		t.Fatalf("Expected removed topic refresh to clear reply state, got composing=%v draft=%q posting=%v replyPost=%d err=%v", refreshed.composing, refreshed.composeText, refreshed.posting, refreshed.replyPost, refreshed.err)
+	}
+
+	newModel, _ = refreshed.Update(staleThreadCmd())
+	afterStaleThreadLoad := newModel.(Model)
+	if len(afterStaleThreadLoad.threads.threads) != 0 || afterStaleThreadLoad.threads.topicID != (models.UUID{}) {
+		t.Fatalf("Expected actual tagged stale thread load to remain inert, got %#v", afterStaleThreadLoad.threads.threads)
+	}
+	newModel, _ = afterStaleThreadLoad.Update(staleMessageCmd())
+	afterStaleLoad := newModel.(Model)
+	if len(afterStaleLoad.messages.messages) != 0 || afterStaleLoad.messages.threadID != (models.UUID{}) || afterStaleLoad.canReply() {
+		t.Fatalf("Expected tagged stale message load to remain inert, got %#v", afterStaleLoad.messages.messages)
+	}
+}
+
+func TestModelTopicsRemovalIgnoresActualInFlightReplySuccess(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, topic, thread := replyReadyModel(t, store, "doctor-biz")
+	model.threads.topicID = topic.ID
+	model.composing = true
+	model.composeText = "persisted while topic disappears"
+	newModel, postCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if postCmd == nil || !pending.posting || pending.replyPost == 0 {
+		t.Fatal("Expected an actual tagged reply persistence command")
+	}
+	if err := store.ArchiveTopic(topic.ID, true); err != nil {
+		t.Fatalf("ArchiveTopic: %v", err)
+	}
+	topicsMsg, ok := pending.topics.LoadTopics()().(TopicsLoadedMsg)
+	if !ok {
+		t.Fatal("Expected real topic refresh result")
+	}
+	newModel, _ = pending.Update(topicsMsg)
+	removed := newModel.(Model)
+	if removed.posting || removed.replyPost != 0 || removed.composing || removed.composeText != "" {
+		t.Fatal("Expected topic removal to relinquish in-flight reply ownership")
+	}
+
+	postResult := postCmd()
+	newModel, refreshCmd := removed.Update(postResult)
+	afterStaleSuccess := newModel.(Model)
+	if refreshCmd != nil {
+		t.Fatal("Expected stale reply success not to refresh a removed topic")
+	}
+	if afterStaleSuccess.threads.topicID != (models.UUID{}) || len(afterStaleSuccess.threads.threads) != 0 ||
+		afterStaleSuccess.messages.threadID != (models.UUID{}) || len(afterStaleSuccess.messages.messages) != 0 || afterStaleSuccess.canReply() {
+		t.Fatal("Expected stale reply success not to resurrect removed-topic UI state")
+	}
+	persisted, err := store.ListMessages(thread.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(persisted) != 2 || persisted[1].Content != "persisted while topic disappears" {
+		t.Fatalf("Expected real in-flight write to persist once without UI resurrection, got %#v", persisted)
+	}
+}
+
+func TestModelTopicsRemovalIgnoresActualInFlightReplyFailure(t *testing.T) {
+	store := newTestStore(t)
+
+	model, topic, _ := replyReadyModel(t, store, "doctor-biz")
+	model.threads.topicID = topic.ID
+	model.composing = true
+	model.composeText = "will fail after removal"
+	newModel, postCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	if postCmd == nil {
+		t.Fatal("Expected an actual tagged reply persistence command")
+	}
+	if err := store.ArchiveTopic(topic.ID, true); err != nil {
+		t.Fatalf("ArchiveTopic: %v", err)
+	}
+	topicsMsg, ok := pending.topics.LoadTopics()().(TopicsLoadedMsg)
+	if !ok {
+		t.Fatal("Expected real topic refresh result")
+	}
+	newModel, _ = pending.Update(topicsMsg)
+	removed := newModel.(Model)
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	postResult := postCmd()
+	newModel, refreshCmd := removed.Update(postResult)
+	afterStaleFailure := newModel.(Model)
+	if refreshCmd != nil || afterStaleFailure.err != nil || afterStaleFailure.posting || afterStaleFailure.replyPost != 0 {
+		t.Fatalf("Expected stale reply failure to remain inert, got cmd=%v err=%v posting=%v replyPost=%d", refreshCmd, afterStaleFailure.err, afterStaleFailure.posting, afterStaleFailure.replyPost)
+	}
+}
+
+func TestModelTopicsRefreshPreservesActualInFlightReplyWhenTopicRemains(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	model, topic, _ := replyReadyModel(t, store, "doctor-biz")
+	model.threads.topicID = topic.ID
+	model.composing = true
+	model.composeText = "normal in-flight reply"
+	newModel, postCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pending := newModel.(Model)
+	replyRequest := pending.replyPost
+	topicsMsg, ok := pending.topics.LoadTopics()().(TopicsLoadedMsg)
+	if !ok {
+		t.Fatal("Expected real topic refresh result")
+	}
+	newModel, _ = pending.Update(topicsMsg)
+	stillPending := newModel.(Model)
+	if !stillPending.posting || stillPending.replyPost != replyRequest || !stillPending.composing || stillPending.composeText != "normal in-flight reply" {
+		t.Fatal("Expected unchanged topic refresh to preserve in-flight reply ownership and draft")
+	}
+
+	newModel, refreshCmd := stillPending.Update(postCmd())
+	posted := newModel.(Model)
+	if refreshCmd == nil || posted.posting || posted.composing || posted.composeText != "" {
+		t.Fatal("Expected normal reply completion to retain its existing refresh behavior")
 	}
 }
 
@@ -492,24 +1411,15 @@ func TestTopicsModelViewArchived(t *testing.T) {
 
 // ThreadsModel tests
 func TestNewThreadsModel(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
+	tm := NewThreadsModel()
 
-	tm := NewThreadsModel(store)
-
-	if tm.store != store {
-		t.Error("Expected store to be set")
-	}
 	if tm.cursor != 0 {
 		t.Errorf("Expected cursor 0, got %d", tm.cursor)
 	}
 }
 
 func TestThreadsModelSetThreads(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	tm := NewThreadsModel(store)
+	tm := NewThreadsModel()
 	tm.cursor = 5 // Set cursor beyond range
 
 	topicID := uuid.New()
@@ -528,10 +1438,7 @@ func TestThreadsModelSetThreads(t *testing.T) {
 }
 
 func TestThreadsModelNavigation(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	tm := NewThreadsModel(store)
+	tm := NewThreadsModel()
 
 	topicID := uuid.New()
 	threads := []*models.Thread{
@@ -562,10 +1469,7 @@ func TestThreadsModelNavigation(t *testing.T) {
 }
 
 func TestThreadsModelSelected(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	tm := NewThreadsModel(store)
+	tm := NewThreadsModel()
 
 	// No threads
 	if tm.Selected() != nil {
@@ -588,10 +1492,7 @@ func TestThreadsModelSelected(t *testing.T) {
 }
 
 func TestThreadsModelView(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	tm := NewThreadsModel(store)
+	tm := NewThreadsModel()
 
 	// Empty view
 	view := tm.View()
@@ -614,10 +1515,7 @@ func TestThreadsModelView(t *testing.T) {
 }
 
 func TestThreadsModelViewSticky(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	tm := NewThreadsModel(store)
+	tm := NewThreadsModel()
 
 	topicID := uuid.New()
 	thread := models.NewThread(topicID, "Pinned Thread", "test@tui")
@@ -632,14 +1530,8 @@ func TestThreadsModelViewSticky(t *testing.T) {
 
 // MessagesModel tests
 func TestNewMessagesModel(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
+	mm := NewMessagesModel()
 
-	mm := NewMessagesModel(store)
-
-	if mm.store != store {
-		t.Error("Expected store to be set")
-	}
 	if mm.cursor != 0 {
 		t.Errorf("Expected cursor 0, got %d", mm.cursor)
 	}
@@ -649,10 +1541,7 @@ func TestNewMessagesModel(t *testing.T) {
 }
 
 func TestMessagesModelSetMessages(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	mm := NewMessagesModel(store)
+	mm := NewMessagesModel()
 	mm.cursor = 5
 	mm.scroll = 3
 
@@ -675,10 +1564,7 @@ func TestMessagesModelSetMessages(t *testing.T) {
 }
 
 func TestMessagesModelNavigation(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	mm := NewMessagesModel(store)
+	mm := NewMessagesModel()
 
 	threadID := uuid.New()
 	messages := []*models.Message{
@@ -709,10 +1595,7 @@ func TestMessagesModelNavigation(t *testing.T) {
 }
 
 func TestMessagesModelSelected(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	mm := NewMessagesModel(store)
+	mm := NewMessagesModel()
 
 	// No messages
 	if mm.Selected() != nil {
@@ -735,10 +1618,7 @@ func TestMessagesModelSelected(t *testing.T) {
 }
 
 func TestMessagesModelView(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	mm := NewMessagesModel(store)
+	mm := NewMessagesModel()
 
 	// Empty view
 	view := mm.View()
@@ -763,10 +1643,7 @@ func TestMessagesModelView(t *testing.T) {
 }
 
 func TestMessagesModelViewEdited(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	mm := NewMessagesModel(store)
+	mm := NewMessagesModel()
 
 	threadID := uuid.New()
 	msg := models.NewMessage(threadID, "Edited message", "test@tui")
@@ -781,10 +1658,7 @@ func TestMessagesModelViewEdited(t *testing.T) {
 }
 
 func TestMessagesModelViewLongContent(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	mm := NewMessagesModel(store)
+	mm := NewMessagesModel()
 
 	threadID := uuid.New()
 	// Create a message longer than 200 characters
@@ -826,74 +1700,6 @@ func TestTopicsModelLoadTopics(t *testing.T) {
 
 	if len(loadedMsg.Topics) != 1 {
 		t.Errorf("Expected 1 topic, got %d", len(loadedMsg.Topics))
-	}
-}
-
-func TestThreadsModelLoadThreads(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	// Create a topic and thread
-	topic := models.NewTopic("TestTopic", "Test", "test@tui")
-	_ = store.CreateTopic(topic)
-	thread := models.NewThread(topic.ID, "Test Thread", "test@tui")
-	_ = store.CreateThread(thread)
-
-	tm := NewThreadsModel(store)
-	cmd := tm.LoadThreads(topic.ID)
-
-	if cmd == nil {
-		t.Error("Expected LoadThreads to return a command")
-	}
-
-	// Execute the command
-	msg := cmd()
-	loadedMsg, ok := msg.(ThreadsLoadedMsg)
-	if !ok {
-		_, isErr := msg.(error)
-		if isErr {
-			t.Fatalf("LoadThreads returned error: %v", msg)
-		}
-		t.Fatalf("Expected ThreadsLoadedMsg, got %T", msg)
-	}
-
-	if len(loadedMsg.Threads) != 1 {
-		t.Errorf("Expected 1 thread, got %d", len(loadedMsg.Threads))
-	}
-}
-
-func TestMessagesModelLoadMessages(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	// Create a topic, thread, and message
-	topic := models.NewTopic("TestTopic", "Test", "test@tui")
-	_ = store.CreateTopic(topic)
-	thread := models.NewThread(topic.ID, "Test Thread", "test@tui")
-	_ = store.CreateThread(thread)
-	message := models.NewMessage(thread.ID, "Hello", "test@tui")
-	_ = store.CreateMessage(message)
-
-	mm := NewMessagesModel(store)
-	cmd := mm.LoadMessages(thread.ID)
-
-	if cmd == nil {
-		t.Error("Expected LoadMessages to return a command")
-	}
-
-	// Execute the command
-	msg := cmd()
-	loadedMsg, ok := msg.(MessagesLoadedMsg)
-	if !ok {
-		_, isErr := msg.(error)
-		if isErr {
-			t.Fatalf("LoadMessages returned error: %v", msg)
-		}
-		t.Fatalf("Expected MessagesLoadedMsg, got %T", msg)
-	}
-
-	if len(loadedMsg.Messages) != 1 {
-		t.Errorf("Expected 1 message, got %d", len(loadedMsg.Messages))
 	}
 }
 
@@ -970,16 +1776,7 @@ func TestModelUpdateComposingEnter(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
-	// Set up a topic and thread for composing
-	topic := models.NewTopic("Topic", "Desc", "test@tui")
-	_ = store.CreateTopic(topic)
-	thread := models.NewThread(topic.ID, "Thread", "test@tui")
-	_ = store.CreateThread(thread)
-
-	model := NewModel(store, "test@tui")
-	model.topics.SetTopics([]*models.Topic{topic})
-	model.threads.SetThreads([]*models.Thread{thread})
-	model.activePane = MessagesPane
+	model, _, _ := replyReadyModel(t, store, "test@tui")
 
 	// Start composing
 	nMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
@@ -994,12 +1791,22 @@ func TestModelUpdateComposingEnter(t *testing.T) {
 
 	// Press Enter to submit
 	enterMsg := tea.KeyMsg{Type: tea.KeyEnter}
-	newModel, _ = m.Update(enterMsg)
+	newModel, cmd := m.Update(enterMsg)
+	m = newModel.(Model)
+	if cmd == nil {
+		t.Fatal("Expected persistence command after Enter")
+	}
+	newModel, refreshCmd := m.Update(cmd())
+	m = newModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("Expected refresh command after persistence")
+	}
+	newModel, _ = m.Update(refreshCmd())
 	m = newModel.(Model)
 
-	// Should have cleared composing
+	// Successful persistence should clear composing.
 	if m.composing {
-		t.Error("Expected composing to be false after Enter")
+		t.Error("Expected composing to be false after persistence")
 	}
 }
 
@@ -1007,7 +1814,7 @@ func TestModelUpdateComposingEmptyEnter(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
-	model := NewModel(store, "test@tui")
+	model, _, _ := replyReadyModel(t, store, "test@tui")
 
 	// Start composing
 	nMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
@@ -1019,9 +1826,9 @@ func TestModelUpdateComposingEmptyEnter(t *testing.T) {
 	newModel, _ = m.Update(enterMsg)
 	m = newModel.(Model)
 
-	// Current implementation exits composing mode on Enter regardless
-	if m.composing {
-		t.Error("Expected composing to be false after Enter")
+	// Empty replies are rejected without leaving compose mode.
+	if !m.composing {
+		t.Error("Expected composing to remain true after empty Enter")
 	}
 }
 
@@ -1117,54 +1924,6 @@ func TestTopicsModelLoadTopicsError(t *testing.T) {
 		loadedMsg, isLoaded := msg.(TopicsLoadedMsg)
 		if !isLoaded {
 			t.Fatalf("Expected error or TopicsLoadedMsg, got %T", msg)
-		}
-		_ = loadedMsg
-	}
-}
-
-func TestThreadsModelLoadThreadsError(t *testing.T) {
-	store := newTestStore(t)
-	store.Close() // Close store to cause error
-
-	tm := NewThreadsModel(store)
-	cmd := tm.LoadThreads(uuid.New())
-
-	if cmd == nil {
-		t.Fatal("Expected LoadThreads to return a command")
-	}
-
-	// Execute the command - should return an error
-	msg := cmd()
-	_, isErr := msg.(error)
-	if !isErr {
-		// Might also return empty threads
-		loadedMsg, isLoaded := msg.(ThreadsLoadedMsg)
-		if !isLoaded {
-			t.Fatalf("Expected error or ThreadsLoadedMsg, got %T", msg)
-		}
-		_ = loadedMsg
-	}
-}
-
-func TestMessagesModelLoadMessagesError(t *testing.T) {
-	store := newTestStore(t)
-	store.Close() // Close store to cause error
-
-	mm := NewMessagesModel(store)
-	cmd := mm.LoadMessages(uuid.New())
-
-	if cmd == nil {
-		t.Fatal("Expected LoadMessages to return a command")
-	}
-
-	// Execute the command - should return an error
-	msg := cmd()
-	_, isErr := msg.(error)
-	if !isErr {
-		// Might also return empty messages
-		loadedMsg, isLoaded := msg.(MessagesLoadedMsg)
-		if !isLoaded {
-			t.Fatalf("Expected error or MessagesLoadedMsg, got %T", msg)
 		}
 		_ = loadedMsg
 	}
@@ -1297,10 +2056,7 @@ func TestModelViewActivePane(t *testing.T) {
 }
 
 func TestThreadsModelSetThreadsEmpty(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	tm := NewThreadsModel(store)
+	tm := NewThreadsModel()
 	tm.cursor = 5
 
 	// Set empty threads
@@ -1315,10 +2071,7 @@ func TestThreadsModelSetThreadsEmpty(t *testing.T) {
 }
 
 func TestMessagesModelSetMessagesEmpty(t *testing.T) {
-	store := newTestStore(t)
-	defer store.Close()
-
-	mm := NewMessagesModel(store)
+	mm := NewMessagesModel()
 	mm.cursor = 5
 	mm.scroll = 3
 
@@ -1334,6 +2087,42 @@ func TestMessagesModelSetMessagesEmpty(t *testing.T) {
 	if mm.scroll != 0 {
 		t.Errorf("Expected scroll reset to 0, got %d", mm.scroll)
 	}
+}
+
+// replyReadyModel seeds a real store with one topic, thread, and message and returns a model
+// whose Messages pane shows that thread, ready to compose a reply.
+func replyReadyModel(t *testing.T, store *storage.SqliteStore, identity string) (Model, *models.Topic, *models.Thread) {
+	t.Helper()
+	topic := models.NewTopic("Reply topic", "Reply tests", "seed@tui")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("CreateTopic: %v", err)
+	}
+	thread := models.NewThread(topic.ID, "Reply thread", "seed@tui")
+	thread.CreatedAt = time.Now().Add(-2 * time.Hour)
+	thread.UpdatedAt = time.Now().Add(-time.Hour)
+	if err := store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	initial := models.NewMessage(thread.ID, "Initial message", "seed@tui")
+	initial.CreatedAt = thread.CreatedAt.Add(time.Minute)
+	if err := store.CreateMessage(initial); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	persistedThread, err := store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	thread = persistedThread
+
+	model := NewModel(store, identity)
+	model.activePane = MessagesPane
+	model.topics.SetTopics([]*models.Topic{topic})
+	model.threads.SetThreads([]*models.Thread{thread})
+	model.messages.threadID = thread.ID
+	model.messages.SetMessages([]*models.Message{initial})
+	model.selectedThreadID = thread.ID
+	model.loadedThreadID = thread.ID
+	return model, topic, thread
 }
 
 // Helper to create a test store

@@ -7,38 +7,20 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
 	"github.com/harper/bbs/internal/models"
-	"github.com/harper/bbs/internal/storage"
 )
 
-type MessagesLoadedMsg struct {
-	Messages []*models.Message
-}
-
 type MessagesModel struct {
-	store    storage.Storage
 	messages []*models.Message
 	cursor   int
 	scroll   int
 	threadID uuid.UUID
 }
 
-func NewMessagesModel(store storage.Storage) MessagesModel {
-	return MessagesModel{store: store, cursor: 0, scroll: 0}
-}
-
-func (m *MessagesModel) LoadMessages(threadID uuid.UUID) tea.Cmd {
-	m.threadID = threadID
-	return func() tea.Msg {
-		messages, err := m.store.ListMessages(threadID)
-		if err != nil {
-			return err
-		}
-		return MessagesLoadedMsg{Messages: messages}
-	}
+func NewMessagesModel() MessagesModel {
+	return MessagesModel{cursor: 0, scroll: 0}
 }
 
 func (m *MessagesModel) SetMessages(messages []*models.Message) {

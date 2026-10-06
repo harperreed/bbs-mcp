@@ -6,37 +6,19 @@ package tui
 import (
 	"fmt"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
 	"github.com/harper/bbs/internal/models"
-	"github.com/harper/bbs/internal/storage"
 )
 
-type ThreadsLoadedMsg struct {
-	Threads []*models.Thread
-}
-
 type ThreadsModel struct {
-	store   storage.Storage
 	threads []*models.Thread
 	cursor  int
 	topicID uuid.UUID
 }
 
-func NewThreadsModel(store storage.Storage) ThreadsModel {
-	return ThreadsModel{store: store, cursor: 0}
-}
-
-func (m *ThreadsModel) LoadThreads(topicID uuid.UUID) tea.Cmd {
-	m.topicID = topicID
-	return func() tea.Msg {
-		threads, err := m.store.ListThreads(topicID)
-		if err != nil {
-			return err
-		}
-		return ThreadsLoadedMsg{Threads: threads}
-	}
+func NewThreadsModel() ThreadsModel {
+	return ThreadsModel{cursor: 0}
 }
 
 func (m *ThreadsModel) SetThreads(threads []*models.Thread) {

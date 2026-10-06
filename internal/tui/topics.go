@@ -38,7 +38,16 @@ func (m *TopicsModel) LoadTopics() tea.Cmd {
 }
 
 func (m *TopicsModel) SetTopics(topics []*models.Topic) {
+	selected := m.Selected()
 	m.topics = topics
+	if selected != nil {
+		for i, topic := range topics {
+			if topic.ID == selected.ID {
+				m.cursor = i
+				return
+			}
+		}
+	}
 	if m.cursor >= len(topics) {
 		m.cursor = len(topics) - 1
 	}
