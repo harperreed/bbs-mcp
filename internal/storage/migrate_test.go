@@ -602,3 +602,145 @@ func TestMigrateData_PreservesMessageOrdering(t *testing.T) {
 		}
 	}
 }
+
+type migrationSourceCorruption struct {
+	name    string
+	wantErr string
+	corrupt func(string) string
+}
+
+func TestMigrateData_SourceReadFailureLeavesDestinationUnchanged(t *testing.T) {
+	corruptions := []migrationSourceCorruption{
+		{
+			name:    "thread list malformed v2 frontmatter",
+			wantErr: "thread updated_at is required",
+			corrupt: malformedV2Corruptions()[2].corrupt,
+		},
+		{
+			name:    "message list malformed v2 framing",
+			wantErr: "message content is shorter than declared byte count",
+			corrupt: malformedV2Corruptions()[0].corrupt,
+		},
+	}
+
+	for _, corruption := range corruptions {
+		t.Run(corruption.name, func(t *testing.T) {
+			src := newMalformedMigrationSource(t, corruption.corrupt)
+			defer src.Close()
+
+			for _, destination := range []string{"sqlite", "markdown"} {
+				t.Run(destination, func(t *testing.T) {
+					assertMigrationSourceReadFailure(t, src, destination, corruption.wantErr)
+				})
+			}
+		})
+	}
+}
+
+func newMalformedMigrationSource(t *testing.T, corrupt func(string) string) *MarkdownStore {
+	t.Helper()
+	src, err := NewMarkdownStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("create source store: %v", err)
+	}
+
+	validTopic := models.NewTopic("alpha-valid", "Migrates before the malformed topic", "test@cli")
+	mustNoErr(t, src.CreateTopic(validTopic))
+	validThread := models.NewThread(validTopic.ID, "Valid thread", "test@cli")
+	mustNoErr(t, src.CreateThread(validThread))
+	mustNoErr(t, src.CreateMessage(models.NewMessage(validThread.ID, "valid message", "test@cli")))
+
+	malformedTopic := models.NewTopic("zeta-malformed", "Contains malformed v2 data", "test@cli")
+	mustNoErr(t, src.CreateTopic(malformedTopic))
+	malformedThread := models.NewThread(malformedTopic.ID, "Malformed thread", "test@cli")
+	mustNoErr(t, src.CreateThread(malformedThread))
+	mustNoErr(t, src.CreateMessage(models.NewMessage(malformedThread.ID, "malformed message", "test@cli")))
+	threadPath, err := src.threadFilePath(malformedTopic.Name, malformedThread.ID)
+	if err != nil {
+		t.Fatalf("find malformed thread fixture: %v", err)
+	}
+	data, err := os.ReadFile(threadPath)
+	if err != nil {
+		t.Fatalf("read malformed thread fixture: %v", err)
+	}
+	corrupted := corrupt(string(data))
+	if corrupted == string(data) {
+		t.Fatal("fixture corruption did not change thread bytes")
+	}
+	if err := os.WriteFile(threadPath, []byte(corrupted), 0640); err != nil {
+		t.Fatalf("write malformed thread fixture: %v", err)
+	}
+	return src
+}
+
+func assertMigrationSourceReadFailure(t *testing.T, src Storage, destination, wantErr string) {
+	t.Helper()
+	dst := openMigrationDestination(t, destination)
+	defer dst.Close()
+	seedTestData(t, dst)
+	beforeCounts := migrationDomainCounts(t, dst)
+	var beforeMarkdown markdownTreeSnapshot
+	if markdown, ok := dst.(*MarkdownStore); ok {
+		beforeMarkdown = snapshotMarkdownTree(t, markdown)
+	}
+
+	summary, err := MigrateData(src, dst)
+	if err == nil {
+		t.Fatal("MigrateData returned success for malformed source")
+	}
+	if summary != nil {
+		t.Fatalf("MigrateData summary = %#v, want nil on source read failure", summary)
+	}
+	if !strings.Contains(err.Error(), "list attachments for message") {
+		t.Errorf("MigrateData error %q lacks source read context", err)
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("MigrateData error %q lacks root cause %q", err, wantErr)
+	}
+	if afterCounts := migrationDomainCounts(t, dst); afterCounts != beforeCounts {
+		t.Errorf("destination domain counts after source read failure = %v, want unchanged %v", afterCounts, beforeCounts)
+	}
+	if markdown, ok := dst.(*MarkdownStore); ok {
+		assertMarkdownTreeUnchanged(t, markdown, beforeMarkdown)
+	}
+}
+
+func openMigrationDestination(t *testing.T, destination string) Storage {
+	t.Helper()
+	if destination == "sqlite" {
+		return newTestStore(t)
+	}
+	return newTestMarkdownStore(t)
+}
+
+func migrationDomainCounts(t *testing.T, store Storage) [4]int {
+	t.Helper()
+	var counts [4]int
+	topics, err := store.ListTopics(true)
+	if err != nil {
+		t.Fatalf("list destination topics: %v", err)
+	}
+	counts[0] = len(topics)
+	for _, topic := range topics {
+		threads, err := store.ListThreads(topic.ID)
+		if err != nil {
+			t.Fatalf("list destination threads: %v", err)
+		}
+		counts[1] += len(threads)
+		for _, thread := range threads {
+			messages, err := store.ListMessages(thread.ID)
+			if err != nil {
+				t.Fatalf("list destination messages: %v", err)
+			}
+			counts[2] += len(messages)
+			for _, message := range messages {
+				attachments, err := store.ListAttachments(message.ID)
+				if err != nil {
+					t.Fatalf("list destination attachments: %v", err)
+				}
+				counts[3] += len(attachments)
+			}
+		}
+	}
+	return counts
+}

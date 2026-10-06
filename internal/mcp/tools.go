@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,14 +20,14 @@ func (s *Server) registerTools() {
 	// Topic tools
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "list_topics",
-		Description: "List all topics on the board",
+		Description: "List active topics by default; optionally include archived topics",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"include_archived":{"type":"boolean","description":"Include archived topics"}}}`),
 	}, s.handleListTopics)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "create_topic",
 		Description: "Create a new topic",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"}},"required":["name"]}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"agent_name":{"type":"string"}},"required":["name"]}`),
 	}, s.handleCreateTopic)
 
 	s.mcp.AddTool(&mcp.Tool{
@@ -244,8 +245,15 @@ func (s *Server) handleCreateThread(ctx context.Context, req *mcp.CallToolReques
 	if args.Message != "" {
 		msg := models.NewMessage(thread.ID, args.Message, id)
 		if err := s.store.CreateMessage(msg); err != nil {
+			createErr := fmt.Errorf("post initial message: %w", err)
+			if cleanupErr := s.store.DeleteThread(thread.ID); cleanupErr != nil {
+				createErr = errors.Join(
+					createErr,
+					fmt.Errorf("delete thread after initial message failure: %w", cleanupErr),
+				)
+			}
 			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("thread created but failed to post message: %v", err)}},
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to create thread with initial message: %v", createErr)}},
 				IsError: true,
 			}, nil
 		}

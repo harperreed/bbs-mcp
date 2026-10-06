@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,12 +104,32 @@ func (s *MarkdownStore) threadFileName(topicName, subject string, threadID uuid.
 
 // threadFrontmatter holds the YAML frontmatter of a thread file.
 type threadFrontmatter struct {
-	ID        string `yaml:"id"`
-	Topic     string `yaml:"topic"`
-	Subject   string `yaml:"subject"`
-	CreatedAt string `yaml:"created_at"`
-	CreatedBy string `yaml:"created_by"`
-	Sticky    bool   `yaml:"sticky"`
+	FormatVersion        int    `yaml:"format_version,omitempty"`
+	ID                   string `yaml:"id"`
+	Topic                string `yaml:"topic"`
+	Subject              string `yaml:"subject"`
+	CreatedAt            string `yaml:"created_at"`
+	CreatedBy            string `yaml:"created_by"`
+	UpdatedAt            string `yaml:"updated_at,omitempty"`
+	Sticky               bool   `yaml:"sticky"`
+	formatVersionPresent bool
+}
+
+// UnmarshalYAML preserves whether format_version was explicitly present.
+func (fm *threadFrontmatter) UnmarshalYAML(node *yaml.Node) error {
+	type rawThreadFrontmatter threadFrontmatter
+	var raw rawThreadFrontmatter
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*fm = threadFrontmatter(raw)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "format_version" {
+			fm.formatVersionPresent = true
+			break
+		}
+	}
+	return nil
 }
 
 // parsedMessage holds a message parsed from a thread markdown file.
@@ -144,17 +165,63 @@ func parseThreadFrontmatter(content string) (*threadFrontmatter, error) {
 }
 
 // msgIDRegexp matches the message ID comment: <!-- msg:UUID -->
-var msgIDRegexp = regexp.MustCompile(`<!-- msg:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) -->`)
+var msgIDRegexp = regexp.MustCompile(`^<!-- msg:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) -->$`)
 
 // msgHeaderRegexp matches the message header: ## author — timestamp (with optional fractional seconds)
 var msgHeaderRegexp = regexp.MustCompile(`^## (.+?) — (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)$`)
 
 // editedAtRegexp matches the edited marker: <!-- edited:timestamp --> (with optional fractional seconds)
-var editedAtRegexp = regexp.MustCompile(`<!-- edited:(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) -->`)
+var editedAtRegexp = regexp.MustCompile(`^<!-- edited:(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) -->$`)
 
-// parseThreadMessages parses messages from the body of a thread markdown file (after frontmatter).
-// Malformed message sections are silently skipped.
-func parseThreadMessages(content string) []*parsedMessage {
+// contentBytesRegexp matches the v2 byte-length marker for a message body.
+var contentBytesRegexp = regexp.MustCompile(`^<!-- content-bytes:([0-9]+) -->$`)
+
+const (
+	threadFormatVersion = 2
+	messageSeparator    = "\n<!-- message-separator -->\n"
+)
+
+// parseThreadMessages parses a thread's messages for readers and rewriters alike, rejecting
+// malformed v2 data so reads never hide corruption and mutations never rewrite it.
+func parseThreadMessages(content string) ([]*parsedMessage, error) {
+	fm, err := parseThreadFrontmatter(content)
+	if err != nil {
+		return nil, fmt.Errorf("parse thread frontmatter: %w", err)
+	}
+	if !fm.formatVersionPresent {
+		return parseLegacyThreadMessages(content), nil
+	}
+	if err := validateV2ThreadFrontmatter(fm); err != nil {
+		return nil, err
+	}
+	return parseV2ThreadMessages(content)
+}
+
+// validateV2ThreadFrontmatter enforces fields required to safely rewrite a v2 thread.
+func validateV2ThreadFrontmatter(fm *threadFrontmatter) error {
+	if fm.FormatVersion != threadFormatVersion {
+		return fmt.Errorf("unsupported thread format version: %d", fm.FormatVersion)
+	}
+	if _, err := uuid.Parse(fm.ID); err != nil {
+		return fmt.Errorf("parse thread ID: %w", err)
+	}
+	if fm.Topic == "" {
+		return fmt.Errorf("thread topic is required")
+	}
+	if _, err := mdstore.ParseTime(fm.CreatedAt); err != nil {
+		return fmt.Errorf("parse thread created_at: %w", err)
+	}
+	if fm.UpdatedAt == "" {
+		return fmt.Errorf("thread updated_at is required for format version %d", threadFormatVersion)
+	}
+	if _, err := mdstore.ParseTime(fm.UpdatedAt); err != nil {
+		return fmt.Errorf("parse thread updated_at: %w", err)
+	}
+	return nil
+}
+
+// parseLegacyThreadMessages parses the original separator-delimited format.
+func parseLegacyThreadMessages(content string) []*parsedMessage {
 	// Split off frontmatter using mdstore.ParseFrontmatter
 	_, body := mdstore.ParseFrontmatter(content)
 	body = strings.TrimSpace(body)
@@ -185,8 +252,125 @@ func parseThreadMessages(content string) []*parsedMessage {
 // splitMessages splits the message body into individual message sections.
 func splitMessages(body string) []string {
 	// Messages are separated by "<!-- message-separator -->" on its own line
-	parts := strings.Split(body, "\n<!-- message-separator -->\n")
+	parts := strings.Split(body, messageSeparator)
 	return parts
+}
+
+// parseV2ThreadMessages parses byte-length-delimited message bodies without trimming them.
+func parseV2ThreadMessages(content string) ([]*parsedMessage, error) {
+	body, ok := exactThreadBody(content)
+	if !ok {
+		return nil, fmt.Errorf("find exact thread body")
+	}
+	if body == "" {
+		return nil, nil
+	}
+
+	var messages []*parsedMessage
+	for cursor := 0; ; {
+		msg, next, err := parseV2Message(body, cursor)
+		if err != nil {
+			return nil, fmt.Errorf("parse v2 message at byte %d: %w", cursor, err)
+		}
+		messages = append(messages, msg)
+		cursor = next
+		if cursor == len(body) {
+			return messages, nil
+		}
+		if !strings.HasPrefix(body[cursor:], messageSeparator) {
+			return nil, fmt.Errorf("missing message separator at byte %d", cursor)
+		}
+		cursor += len(messageSeparator)
+		if cursor == len(body) {
+			return nil, fmt.Errorf("message separator is not followed by a message")
+		}
+	}
+}
+
+// exactThreadBody returns the body without mdstore's legacy outer-whitespace normalization.
+func exactThreadBody(content string) (string, bool) {
+	if !strings.HasPrefix(content, "---\n") {
+		return "", false
+	}
+	rest := content[len("---\n"):]
+	closing := strings.Index(rest, "\n---\n")
+	if closing < 0 {
+		return "", false
+	}
+	return rest[closing+len("\n---\n"):], true
+}
+
+// parseV2Message parses one message beginning at start and returns its next byte offset.
+func parseV2Message(body string, start int) (*parsedMessage, int, error) {
+	cursor := start
+	header, ok := readMessageLine(body, &cursor)
+	if !ok {
+		return nil, start, fmt.Errorf("read message header")
+	}
+	author, createdAt, ok := parseMessageHeader(header)
+	if !ok {
+		return nil, start, fmt.Errorf("parse message header")
+	}
+
+	idLine, ok := readMessageLine(body, &cursor)
+	if !ok {
+		return nil, start, fmt.Errorf("read message ID")
+	}
+	id, ok := parseMessageID(idLine)
+	if !ok {
+		return nil, start, fmt.Errorf("parse message ID")
+	}
+
+	metadataLine, ok := readMessageLine(body, &cursor)
+	if !ok {
+		return nil, start, fmt.Errorf("read message metadata")
+	}
+	var editedAt *time.Time
+	if parsedEditedAt, edited := parseEditedAt(metadataLine); edited {
+		editedAt = parsedEditedAt
+		metadataLine, ok = readMessageLine(body, &cursor)
+		if !ok {
+			return nil, start, fmt.Errorf("read content length")
+		}
+	}
+
+	matches := contentBytesRegexp.FindStringSubmatch(metadataLine)
+	if matches == nil {
+		return nil, start, fmt.Errorf("parse content length")
+	}
+	contentBytes, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return nil, start, fmt.Errorf("parse content byte count: %w", err)
+	}
+	blank, ok := readMessageLine(body, &cursor)
+	if !ok || blank != "" {
+		return nil, start, fmt.Errorf("missing content delimiter")
+	}
+	if contentBytes > len(body)-cursor {
+		return nil, start, fmt.Errorf("message content is shorter than declared byte count")
+	}
+
+	msg := &parsedMessage{
+		ID:        id,
+		CreatedBy: author,
+		CreatedAt: createdAt,
+		EditedAt:  editedAt,
+		Content:   body[cursor : cursor+contentBytes],
+	}
+	return msg, cursor + contentBytes, nil
+}
+
+func readMessageLine(content string, cursor *int) (string, bool) {
+	if *cursor > len(content) {
+		return "", false
+	}
+	relativeEnd := strings.IndexByte(content[*cursor:], '\n')
+	if relativeEnd < 0 {
+		return "", false
+	}
+	line := content[*cursor : *cursor+relativeEnd]
+	*cursor += relativeEnd + 1
+	return line, true
 }
 
 // parseMessageHeader extracts author and timestamp from a message header line.
@@ -286,21 +470,22 @@ func parseMessageSection(section string) (*parsedMessage, error) {
 // renderThread renders a complete thread file (frontmatter + messages).
 func renderThread(thread *models.Thread, topicName string, messages []*parsedMessage) (string, error) {
 	fm := threadFrontmatter{
-		ID:        thread.ID.String(),
-		Topic:     topicName,
-		Subject:   thread.Subject,
-		CreatedAt: mdstore.FormatTime(thread.CreatedAt.UTC()),
-		CreatedBy: thread.CreatedBy,
-		Sticky:    thread.Sticky,
+		FormatVersion: threadFormatVersion,
+		ID:            thread.ID.String(),
+		Topic:         topicName,
+		Subject:       thread.Subject,
+		CreatedAt:     mdstore.FormatTime(thread.CreatedAt.UTC()),
+		CreatedBy:     thread.CreatedBy,
+		UpdatedAt:     mdstore.FormatTime(thread.UpdatedAt.UTC()),
+		Sticky:        thread.Sticky,
 	}
 
 	// Build the message body
 	var body strings.Builder
 	for i, msg := range messages {
 		if i > 0 {
-			body.WriteString("\n<!-- message-separator -->\n")
+			body.WriteString(messageSeparator)
 		}
-		body.WriteString("\n")
 		body.WriteString(renderMessage(msg))
 	}
 
@@ -316,18 +501,43 @@ func renderThread(thread *models.Thread, topicName string, messages []*parsedMes
 func renderMessage(msg *parsedMessage) string {
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("## %s — %s\n", msg.CreatedBy, mdstore.FormatTime(msg.CreatedAt.UTC())))
-	b.WriteString(fmt.Sprintf("<!-- msg:%s -->\n", msg.ID.String()))
+	fmt.Fprintf(&b, "## %s — %s\n", msg.CreatedBy, mdstore.FormatTime(msg.CreatedAt.UTC()))
+	fmt.Fprintf(&b, "<!-- msg:%s -->\n", msg.ID.String())
 
 	if msg.EditedAt != nil {
-		b.WriteString(fmt.Sprintf("<!-- edited:%s -->\n", mdstore.FormatTime(msg.EditedAt.UTC())))
+		fmt.Fprintf(&b, "<!-- edited:%s -->\n", mdstore.FormatTime(msg.EditedAt.UTC()))
 	}
 
-	b.WriteString("\n")
+	fmt.Fprintf(&b, "<!-- content-bytes:%d -->\n\n", len(msg.Content))
 	b.WriteString(msg.Content)
-	b.WriteString("\n")
 
 	return b.String()
+}
+
+// threadActivity returns persisted v2 activity or derives legacy activity from message creation times.
+func threadActivity(fm *threadFrontmatter, messages []*parsedMessage) (time.Time, error) {
+	createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse thread created_at: %w", err)
+	}
+	if fm.formatVersionPresent {
+		if fm.UpdatedAt == "" {
+			return time.Time{}, fmt.Errorf("thread updated_at is required for format version %d", threadFormatVersion)
+		}
+		updatedAt, err := mdstore.ParseTime(fm.UpdatedAt)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse thread updated_at: %w", err)
+		}
+		return updatedAt, nil
+	}
+
+	updatedAt := createdAt
+	for _, msg := range messages {
+		if msg.CreatedAt.After(updatedAt) {
+			updatedAt = msg.CreatedAt
+		}
+	}
+	return updatedAt, nil
 }
 
 // topicEntry represents a single topic in the _topics.yaml file.

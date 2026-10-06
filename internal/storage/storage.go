@@ -6,6 +6,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,16 +79,25 @@ func NewSqliteStore(dbPath string) (*SqliteStore, error) {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	absolutePath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+	slashPath := filepath.ToSlash(absolutePath)
+	if filepath.VolumeName(absolutePath) != "" && !strings.HasPrefix(slashPath, "/") {
+		slashPath = "/" + slashPath
+	}
+	dsnURL := &url.URL{Scheme: "file", Path: slashPath}
+	query := dsnURL.Query()
+	query.Add("_pragma", "foreign_keys(1)")
+	dsnURL.RawQuery = query.Encode()
+
+	db, err := sql.Open("sqlite", dsnURL.String())
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Enable foreign keys and WAL mode
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
+	// WAL is persistent database state; foreign keys are enabled per connection by the DSN.
 	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("enable WAL mode: %w", err)
@@ -172,26 +182,26 @@ func (s *SqliteStore) GetTopicByName(name string) (*models.Topic, error) {
 
 // UpdateTopic updates an existing topic.
 func (s *SqliteStore) UpdateTopic(t *models.Topic) error {
-	_, err := s.db.Exec(
+	result, err := s.db.Exec(
 		`UPDATE topics SET name = ?, description = ?, archived = ? WHERE id = ?`,
 		t.Name, t.Description, boolToInt(t.Archived), t.ID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("update topic: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "topic", t.ID)
 }
 
 // DeleteTopic deletes a topic (cascades to threads).
 func (s *SqliteStore) DeleteTopic(id uuid.UUID) error {
-	_, err := s.db.Exec(`DELETE FROM topics WHERE id = ?`, id.String())
+	result, err := s.db.Exec(`DELETE FROM topics WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete topic: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "topic", id)
 }
 
-// ListTopics returns all topics, optionally including archived ones.
+// ListTopics returns active topics when includeArchived is false and all topics when it is true.
 func (s *SqliteStore) ListTopics(includeArchived bool) ([]*models.Topic, error) {
 	query := `SELECT id, name, description, created_at, created_by, archived FROM topics`
 	if !includeArchived {
@@ -225,11 +235,11 @@ func (s *SqliteStore) ListTopics(includeArchived bool) ([]*models.Topic, error) 
 
 // ArchiveTopic sets the archived status of a topic.
 func (s *SqliteStore) ArchiveTopic(id uuid.UUID, archived bool) error {
-	_, err := s.db.Exec(`UPDATE topics SET archived = ? WHERE id = ?`, boolToInt(archived), id.String())
+	result, err := s.db.Exec(`UPDATE topics SET archived = ? WHERE id = ?`, boolToInt(archived), id.String())
 	if err != nil {
 		return fmt.Errorf("archive topic: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "topic", id)
 }
 
 // Thread CRUD
@@ -275,31 +285,35 @@ func (s *SqliteStore) GetThread(id uuid.UUID) (*models.Thread, error) {
 
 // UpdateThread updates an existing thread.
 func (s *SqliteStore) UpdateThread(t *models.Thread) error {
-	_, err := s.db.Exec(
-		`UPDATE threads SET subject = ?, sticky = ?, updated_at = ? WHERE id = ?`,
-		t.Subject, boolToInt(t.Sticky), time.Now().UTC(), t.ID.String(),
+	result, err := s.db.Exec(
+		`UPDATE threads SET subject = ?, sticky = ?, updated_at = ? WHERE id = ? AND topic_id = ?`,
+		t.Subject, boolToInt(t.Sticky), time.Now().UTC(), t.ID.String(), t.TopicID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("update thread: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "thread", t.ID)
 }
 
 // DeleteThread deletes a thread (cascades to messages).
 func (s *SqliteStore) DeleteThread(id uuid.UUID) error {
-	_, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id.String())
+	result, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete thread: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "thread", id)
 }
 
-// ListThreads returns all threads for a topic, sorted by sticky then updated_at.
+// ListThreads returns all threads for a topic, sorted by sticky, updated_at, then UUID.
 func (s *SqliteStore) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
+	if _, err := s.GetTopic(topicID); err != nil {
+		return nil, fmt.Errorf("list threads: %w", err)
+	}
+
 	rows, err := s.db.Query(
 		`SELECT id, topic_id, subject, created_at, created_by, updated_at, sticky
 		 FROM threads WHERE topic_id = ?
-		 ORDER BY sticky DESC, updated_at DESC`,
+		 ORDER BY sticky DESC, updated_at DESC, id ASC`,
 		topicID.String(),
 	)
 	if err != nil {
@@ -329,11 +343,11 @@ func (s *SqliteStore) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
 
 // SetThreadSticky sets the sticky status of a thread.
 func (s *SqliteStore) SetThreadSticky(id uuid.UUID, sticky bool) error {
-	_, err := s.db.Exec(`UPDATE threads SET sticky = ? WHERE id = ?`, boolToInt(sticky), id.String())
+	result, err := s.db.Exec(`UPDATE threads SET sticky = ? WHERE id = ?`, boolToInt(sticky), id.String())
 	if err != nil {
 		return fmt.Errorf("set thread sticky: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "thread", id)
 }
 
 // Message CRUD
@@ -345,7 +359,13 @@ func (s *SqliteStore) CreateMessage(m *models.Message) error {
 		editedAt = m.EditedAt.UTC()
 	}
 
-	_, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin create message: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
 		`INSERT INTO messages (id, thread_id, content, created_at, created_by, edited_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		m.ID.String(), m.ThreadID.String(), m.Content, m.CreatedAt.UTC(), m.CreatedBy, editedAt,
@@ -355,9 +375,15 @@ func (s *SqliteStore) CreateMessage(m *models.Message) error {
 	}
 
 	// Update thread's updated_at
-	_, err = s.db.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, time.Now().UTC(), m.ThreadID.String())
+	result, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, time.Now().UTC(), m.ThreadID.String())
 	if err != nil {
 		return fmt.Errorf("update thread timestamp: %w", err)
+	}
+	if err := requireRowAffected(result, "thread", m.ThreadID); err != nil {
+		return fmt.Errorf("update thread timestamp: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit create message: %w", err)
 	}
 
 	return nil
@@ -398,27 +424,31 @@ func (s *SqliteStore) UpdateMessage(m *models.Message) error {
 		editedAt = m.EditedAt.UTC()
 	}
 
-	_, err := s.db.Exec(
-		`UPDATE messages SET content = ?, edited_at = ? WHERE id = ?`,
-		m.Content, editedAt, m.ID.String(),
+	result, err := s.db.Exec(
+		`UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND thread_id = ?`,
+		m.Content, editedAt, m.ID.String(), m.ThreadID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("update message: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "message", m.ID)
 }
 
 // DeleteMessage deletes a message (cascades to attachments).
 func (s *SqliteStore) DeleteMessage(id uuid.UUID) error {
-	_, err := s.db.Exec(`DELETE FROM messages WHERE id = ?`, id.String())
+	result, err := s.db.Exec(`DELETE FROM messages WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete message: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "message", id)
 }
 
 // ListMessages returns all messages for a thread, sorted by created_at.
 func (s *SqliteStore) ListMessages(threadID uuid.UUID) ([]*models.Message, error) {
+	if _, err := s.GetThread(threadID); err != nil {
+		return nil, fmt.Errorf("list messages: %w", err)
+	}
+
 	rows, err := s.db.Query(
 		`SELECT id, thread_id, content, created_at, created_by, edited_at
 		 FROM messages WHERE thread_id = ?
@@ -492,19 +522,23 @@ func (s *SqliteStore) GetAttachment(id uuid.UUID) (*models.Attachment, error) {
 
 // DeleteAttachment deletes an attachment.
 func (s *SqliteStore) DeleteAttachment(id uuid.UUID) error {
-	_, err := s.db.Exec(`DELETE FROM attachments WHERE id = ?`, id.String())
+	result, err := s.db.Exec(`DELETE FROM attachments WHERE id = ?`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete attachment: %w", err)
 	}
-	return nil
+	return requireRowAffected(result, "attachment", id)
 }
 
 // ListAttachments returns all attachments for a message.
 func (s *SqliteStore) ListAttachments(messageID uuid.UUID) ([]*models.Attachment, error) {
+	if _, err := s.GetMessage(messageID); err != nil {
+		return nil, fmt.Errorf("list attachments: %w", err)
+	}
+
 	rows, err := s.db.Query(
 		`SELECT id, message_id, filename, mime_type, data, created_at
 		 FROM attachments WHERE message_id = ?
-		 ORDER BY created_at ASC`,
+		 ORDER BY created_at ASC, id ASC`,
 		messageID.String(),
 	)
 	if err != nil {
@@ -679,4 +713,15 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+func requireRowAffected(result sql.Result, entity string, id uuid.UUID) error {
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check affected %s: %w", entity, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%s not found: %s", entity, id)
+	}
+	return nil
 }

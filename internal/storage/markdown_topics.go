@@ -23,6 +23,11 @@ func (s *MarkdownStore) CreateTopic(t *models.Topic) error {
 		if err != nil {
 			return err
 		}
+		if index, err := topicEntryIndexByID(entries, t.ID); err != nil {
+			return err
+		} else if index >= 0 {
+			return fmt.Errorf("insert topic: duplicate topic ID %s", t.ID)
+		}
 
 		// Check for duplicate name
 		for _, e := range entries {
@@ -31,15 +36,23 @@ func (s *MarkdownStore) CreateTopic(t *models.Topic) error {
 			}
 		}
 
-		entries = append(entries, fromTopicModel(t))
-		if err := s.writeTopics(entries); err != nil {
-			return fmt.Errorf("write topics: %w", err)
+		topicDir, err := s.safeTopicDirPath(t.Name)
+		if err != nil {
+			return err
 		}
-
-		// Create topic directory
-		topicDir := s.topicDirPath(t.Name)
+		_, statErr := os.Stat(topicDir)
+		dirCreated := os.IsNotExist(statErr)
+		// Create the validated directory before publishing its metadata.
 		if err := mdstore.EnsureDir(topicDir); err != nil {
 			return fmt.Errorf("create topic directory: %w", err)
+		}
+
+		entries = append(entries, fromTopicModel(t))
+		if err := s.writeTopics(entries); err != nil {
+			if dirCreated {
+				_ = os.Remove(topicDir)
+			}
+			return fmt.Errorf("write topics: %w", err)
 		}
 
 		return nil
@@ -53,17 +66,36 @@ func (s *MarkdownStore) GetTopic(id uuid.UUID) (*models.Topic, error) {
 		return nil, err
 	}
 
-	idStr := id.String()
-	for _, e := range entries {
-		if e.ID == idStr {
-			topic, err := e.toModel()
-			if err != nil {
-				return nil, fmt.Errorf("parse topic entry: %w", err)
-			}
-			return topic, nil
-		}
+	index, err := topicEntryIndexByID(entries, id)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("topic not found: %s", id)
+	if index < 0 {
+		return nil, fmt.Errorf("topic not found: %s", id)
+	}
+	topic, err := entries[index].toModel()
+	if err != nil {
+		return nil, fmt.Errorf("parse topic entry: %w", err)
+	}
+	return topic, nil
+}
+
+func topicEntryIndexByID(entries []topicEntry, id uuid.UUID) (int, error) {
+	match := -1
+	for i, entry := range entries {
+		storedID, err := uuid.Parse(entry.ID)
+		if err != nil {
+			return -1, fmt.Errorf("parse topic ID %q: %w", entry.ID, err)
+		}
+		if storedID != id {
+			continue
+		}
+		if match >= 0 {
+			return -1, fmt.Errorf("ambiguous topic ID %s: UUID collision", id)
+		}
+		match = i
+	}
+	return match, nil
 }
 
 // GetTopicByName finds a topic by its name.
@@ -79,27 +111,53 @@ func (s *MarkdownStore) GetTopicByName(name string) (*models.Topic, error) {
 			if err != nil {
 				return nil, fmt.Errorf("parse topic entry: %w", err)
 			}
+			if _, err := topicEntryIndexByID(entries, topic.ID); err != nil {
+				return nil, err
+			}
 			return topic, nil
 		}
 	}
 	return nil, fmt.Errorf("topic not found: %s", name)
 }
 
-// ListTopics returns all topics, optionally including archived ones.
+// ListTopics returns active topics when includeArchived is false and all topics when it is true.
 func (s *MarkdownStore) ListTopics(includeArchived bool) ([]*models.Topic, error) {
 	entries, err := s.readTopics()
 	if err != nil {
 		return nil, err
 	}
 
-	var topics []*models.Topic
-	for _, e := range entries {
-		if !includeArchived && e.Archived {
-			continue
-		}
-		topic, err := e.toModel()
+	converted := make([]*models.Topic, len(entries))
+	for i := range entries {
+		topic, err := entries[i].toModel()
 		if err != nil {
-			// Skip malformed entries so one corrupt entry doesn't break listing
+			return nil, fmt.Errorf(
+				"parse topic registry %q entry %d (%q): %w",
+				s.topicsFilePath(), i+1, entries[i].Name, err,
+			)
+		}
+		converted[i] = topic
+	}
+
+	type topicOccurrence struct {
+		index int
+		name  string
+	}
+	seen := make(map[uuid.UUID]topicOccurrence, len(converted))
+	for i, topic := range converted {
+		if first, ok := seen[topic.ID]; ok {
+			return nil, fmt.Errorf(
+				"validate topic registry %q entry %d (%q): ambiguous topic ID %s: UUID collision; "+
+					"first occurrence entry %d (%q)",
+				s.topicsFilePath(), i+1, entries[i].Name, topic.ID, first.index+1, first.name,
+			)
+		}
+		seen[topic.ID] = topicOccurrence{index: i, name: entries[i].Name}
+	}
+
+	var topics []*models.Topic
+	for _, topic := range converted {
+		if !includeArchived && topic.Archived {
 			continue
 		}
 		topics = append(topics, topic)
@@ -121,124 +179,202 @@ func (s *MarkdownStore) UpdateTopic(t *models.Topic) error {
 			return err
 		}
 
-		idStr := t.ID.String()
-		found := false
-		var oldName string
-		for i, e := range entries {
-			if e.ID == idStr {
-				oldName = e.Name
-				entries[i] = fromTopicModel(t)
-				found = true
-				break
-			}
+		index, err := topicEntryIndexByID(entries, t.ID)
+		if err != nil {
+			return err
 		}
-
-		if !found {
+		if index < 0 {
 			return fmt.Errorf("topic not found: %s", t.ID)
 		}
-
-		if err := s.writeTopics(entries); err != nil {
-			return fmt.Errorf("write topics: %w", err)
+		oldName := entries[index].Name
+		for otherIndex, entry := range entries {
+			if otherIndex != index && entry.Name == t.Name {
+				return fmt.Errorf("update topic: topic name %q already exists", t.Name)
+			}
+		}
+		entries[index] = fromTopicModel(t)
+		oldDir, err := s.safeTopicDirPath(oldName)
+		if err != nil {
+			return err
+		}
+		if _, err := s.safeTopicDirPath(t.Name); err != nil {
+			return err
 		}
 
-		// Rename directory if name changed and update thread frontmatter
+		var threadUpdates []threadTopicRename
 		if oldName != t.Name {
-			oldDir := s.topicDirPath(oldName)
-			newDir := s.topicDirPath(t.Name)
-			if _, err := os.Stat(oldDir); err == nil {
-				if err := os.Rename(oldDir, newDir); err != nil {
-					return fmt.Errorf("rename topic directory: %w", err)
-				}
-			}
-
-			// Update the topic field in all thread frontmatter files
-			if err := s.updateThreadTopicNames(newDir, oldName, t.Name); err != nil {
-				return fmt.Errorf("update thread frontmatter after topic rename: %w", err)
+			threadUpdates, err = prepareThreadTopicRename(s.dataDir, oldDir, oldName, t.Name, t.ID)
+			if err != nil {
+				return fmt.Errorf("prepare thread files before topic rename: %w", err)
 			}
 		}
 
-		return nil
+		if oldName == t.Name {
+			if err := s.writeTopics(entries); err != nil {
+				return fmt.Errorf("write topics: %w", err)
+			}
+			return nil
+		}
+
+		return s.commitTopicRename(entries, oldName, t.Name, threadUpdates)
 	})
 }
 
-// updateThreadTopicNames iterates all .md files in a topic directory and updates
-// their frontmatter topic field from oldName to newName.
-func (s *MarkdownStore) updateThreadTopicNames(topicDir, oldName, newName string) error {
+func (s *MarkdownStore) commitTopicRename(
+	entries []topicEntry,
+	oldName string,
+	newName string,
+	threadUpdates []threadTopicRename,
+) error {
+	oldDir, err := s.safeTopicDirPath(oldName)
+	if err != nil {
+		return err
+	}
+	newDir, err := s.safeTopicDirPath(newName)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(oldDir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect topic directory: %w", err)
+		}
+		if err := s.writeTopics(entries); err != nil {
+			return fmt.Errorf("write topics: %w", err)
+		}
+		return nil
+	}
+	if err := os.Rename(oldDir, newDir); err != nil {
+		return fmt.Errorf("rename topic directory: %w", err)
+	}
+
+	written, err := writeThreadTopicRename(newDir, threadUpdates)
+	if err != nil {
+		rollbackErr := rollbackThreadTopicRename(oldDir, newDir, threadUpdates, written)
+		return topicRenameCommitError("update thread frontmatter", err, rollbackErr)
+	}
+	if err := s.writeTopics(entries); err != nil {
+		rollbackErr := rollbackThreadTopicRename(oldDir, newDir, threadUpdates, len(threadUpdates))
+		return topicRenameCommitError("write topics", err, rollbackErr)
+	}
+
+	return nil
+}
+
+type threadTopicRename struct {
+	filename string
+	original []byte
+	content  []byte
+}
+
+// prepareThreadTopicRename validates and renders every thread before persistent rename state changes.
+func prepareThreadTopicRename(
+	boardRoot string,
+	topicDir string,
+	oldName string,
+	newName string,
+	topicID uuid.UUID,
+) ([]threadTopicRename, error) {
 	dirEntries, err := os.ReadDir(topicDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("read topic directory: %w", err)
+		return nil, fmt.Errorf("read topic directory: %w", err)
 	}
 
+	updates := make([]threadTopicRename, 0, len(dirEntries))
 	for _, de := range dirEntries {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
 			continue
 		}
-		fp := filepath.Join(topicDir, de.Name())
-		if err := s.updateThreadFileTopicName(fp, oldName, newName); err != nil {
-			// Skip files that fail to parse rather than aborting the entire rename
+		fp, err := containedPath(boardRoot, filepath.Join(topicDir, de.Name()))
+		if err != nil {
+			return nil, err
+		}
+		data, err := os.ReadFile(fp)
+		if err != nil {
+			return nil, fmt.Errorf("read thread file %s: %w", de.Name(), err)
+		}
+		fm, err := parseThreadFrontmatter(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("parse thread frontmatter %s: %w", de.Name(), err)
+		}
+		if fm.Topic != oldName {
 			continue
 		}
+		messages, err := parseThreadMessages(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("parse thread messages %s: %w", de.Name(), err)
+		}
+		threadID, err := uuid.Parse(fm.ID)
+		if err != nil {
+			return nil, fmt.Errorf("parse thread ID %s: %w", de.Name(), err)
+		}
+		createdAt, err := mdstore.ParseTime(fm.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse thread created_at %s: %w", de.Name(), err)
+		}
+		updatedAt, err := threadActivity(fm, messages)
+		if err != nil {
+			return nil, fmt.Errorf("read thread activity %s: %w", de.Name(), err)
+		}
+		thread := &models.Thread{
+			ID:        threadID,
+			TopicID:   topicID,
+			Subject:   fm.Subject,
+			CreatedAt: createdAt,
+			CreatedBy: fm.CreatedBy,
+			UpdatedAt: updatedAt,
+			Sticky:    fm.Sticky,
+		}
+		content, err := renderThread(thread, newName, messages)
+		if err != nil {
+			return nil, fmt.Errorf("render thread %s: %w", de.Name(), err)
+		}
+		updates = append(updates, threadTopicRename{
+			filename: de.Name(),
+			original: append([]byte(nil), data...),
+			content:  []byte(content),
+		})
 	}
-	return nil
+	return updates, nil
 }
 
-// updateThreadFileTopicName reads a single thread file, updates the topic field
-// in its frontmatter, and writes it back atomically.
-func (s *MarkdownStore) updateThreadFileTopicName(fp, oldName, newName string) error {
-	fm, err := readThreadFrontmatter(fp)
-	if err != nil {
-		return err
-	}
-	if fm.Topic != oldName {
-		return nil
-	}
-
-	data, err := os.ReadFile(fp)
-	if err != nil {
-		return err
-	}
-
-	messages := parseThreadMessages(string(data))
-
-	threadID, err := uuid.Parse(fm.ID)
-	if err != nil {
-		return fmt.Errorf("parse thread ID: %w", err)
-	}
-	topicID, err := s.topicIDByName(newName)
-	if err != nil {
-		return fmt.Errorf("resolve topic ID: %w", err)
-	}
-	createdAt, err := mdstore.ParseTime(fm.CreatedAt)
-	if err != nil {
-		return fmt.Errorf("parse thread created_at: %w", err)
-	}
-
-	// Compute updated_at from messages
-	updatedAt := createdAt
-	for _, msg := range messages {
-		if msg.CreatedAt.After(updatedAt) {
-			updatedAt = msg.CreatedAt
+// writeThreadTopicRename commits prepared thread contents after the directory rename.
+func writeThreadTopicRename(topicDir string, updates []threadTopicRename) (int, error) {
+	for i, update := range updates {
+		if err := mdstore.AtomicWrite(filepath.Join(topicDir, update.filename), update.content); err != nil {
+			return i, fmt.Errorf("write thread file %s: %w", update.filename, err)
 		}
 	}
+	return len(updates), nil
+}
 
-	thread := &models.Thread{
-		ID:        threadID,
-		TopicID:   topicID,
-		Subject:   fm.Subject,
-		CreatedAt: createdAt,
-		CreatedBy: fm.CreatedBy,
-		UpdatedAt: updatedAt,
-		Sticky:    fm.Sticky,
+// rollbackThreadTopicRename restores rewritten files before moving the directory back.
+func rollbackThreadTopicRename(
+	oldDir string,
+	newDir string,
+	updates []threadTopicRename,
+	written int,
+) error {
+	var rollbackErr error
+	for i := 0; i < written; i++ {
+		update := updates[i]
+		if err := mdstore.AtomicWrite(filepath.Join(newDir, update.filename), update.original); err != nil && rollbackErr == nil {
+			rollbackErr = fmt.Errorf("restore thread file %s: %w", update.filename, err)
+		}
 	}
+	if err := os.Rename(newDir, oldDir); err != nil && rollbackErr == nil {
+		rollbackErr = fmt.Errorf("restore topic directory: %w", err)
+	}
+	return rollbackErr
+}
 
-	content, err := renderThread(thread, newName, messages)
-	if err != nil {
-		return fmt.Errorf("render thread: %w", err)
+func topicRenameCommitError(operation string, commitErr error, rollbackErr error) error {
+	if rollbackErr != nil {
+		return fmt.Errorf("%s: %w; rollback failed: %w", operation, commitErr, rollbackErr)
 	}
-	return mdstore.AtomicWrite(fp, []byte(content))
+	return fmt.Errorf("%s: %w", operation, commitErr)
 }
 
 // DeleteTopic deletes a topic and its entire directory (cascades to threads).
@@ -249,21 +385,19 @@ func (s *MarkdownStore) DeleteTopic(id uuid.UUID) error {
 			return err
 		}
 
-		idStr := id.String()
-		found := false
-		var topicName string
-		newEntries := make([]topicEntry, 0, len(entries))
-		for _, e := range entries {
-			if e.ID == idStr {
-				found = true
-				topicName = e.Name
-				continue
-			}
-			newEntries = append(newEntries, e)
+		index, err := topicEntryIndexByID(entries, id)
+		if err != nil {
+			return err
 		}
-
-		if !found {
+		if index < 0 {
 			return fmt.Errorf("topic not found: %s", id)
+		}
+		topicName := entries[index].Name
+		newEntries := append([]topicEntry(nil), entries[:index]...)
+		newEntries = append(newEntries, entries[index+1:]...)
+		topicDir, err := s.safeTopicDirPath(topicName)
+		if err != nil {
+			return err
 		}
 
 		if err := s.writeTopics(newEntries); err != nil {
@@ -271,7 +405,6 @@ func (s *MarkdownStore) DeleteTopic(id uuid.UUID) error {
 		}
 
 		// Remove topic directory and all contents
-		topicDir := s.topicDirPath(topicName)
 		if err := os.RemoveAll(topicDir); err != nil {
 			return fmt.Errorf("remove topic directory: %w", err)
 		}
@@ -288,19 +421,14 @@ func (s *MarkdownStore) ArchiveTopic(id uuid.UUID, archived bool) error {
 			return err
 		}
 
-		idStr := id.String()
-		found := false
-		for i, e := range entries {
-			if e.ID == idStr {
-				entries[i].Archived = archived
-				found = true
-				break
-			}
+		index, err := topicEntryIndexByID(entries, id)
+		if err != nil {
+			return err
 		}
-
-		if !found {
+		if index < 0 {
 			return fmt.Errorf("topic not found: %s", id)
 		}
+		entries[index].Archived = archived
 
 		return s.writeTopics(entries)
 	})

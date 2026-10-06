@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/google/uuid"
 	"github.com/harper/bbs/internal/models"
 )
 
@@ -19,87 +18,114 @@ type MigrateSummary struct {
 	Attachments int
 }
 
-// MigrateData copies all data from src to dst storage.
-// It iterates through topics, threads, messages, and attachments in order,
-// creating each entity in the destination. The destination should be empty
-// before calling this function.
-func MigrateData(src, dst Storage) (*MigrateSummary, error) {
-	summary := &MigrateSummary{}
+type migrationData struct {
+	topics []migrationTopic
+}
 
-	// List all topics (including archived)
+type migrationTopic struct {
+	topic   *models.Topic
+	threads []migrationThread
+}
+
+type migrationThread struct {
+	thread   *models.Thread
+	messages []migrationMessage
+}
+
+type migrationMessage struct {
+	message     *models.Message
+	attachments []*models.Attachment
+}
+
+// MigrateData copies all data from src to dst storage. It reads and validates the
+// complete source graph before the first destination mutation. Destination writes
+// still stop on the first error and are not rolled back. The destination should be
+// empty before calling this function.
+func MigrateData(src, dst Storage) (*MigrateSummary, error) {
+	data, err := collectMigrationData(src)
+	if err != nil {
+		return nil, err
+	}
+	return writeMigrationData(dst, data)
+}
+
+func collectMigrationData(src Storage) (*migrationData, error) {
 	topics, err := src.ListTopics(true)
 	if err != nil {
 		return nil, fmt.Errorf("list source topics: %w", err)
 	}
 
+	data := &migrationData{topics: make([]migrationTopic, 0, len(topics))}
 	for _, topic := range topics {
-		if err := dst.CreateTopic(topic); err != nil {
-			return nil, fmt.Errorf("create topic %q: %w", topic.Name, err)
+		threads, err := src.ListThreads(topic.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list threads for topic %q: %w", topic.Name, err)
+		}
+
+		collectedTopic := migrationTopic{
+			topic:   topic,
+			threads: make([]migrationThread, 0, len(threads)),
+		}
+		for _, thread := range threads {
+			messages, err := src.ListMessages(thread.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list messages for thread %q: %w", thread.Subject, err)
+			}
+
+			collectedThread := migrationThread{
+				thread:   thread,
+				messages: make([]migrationMessage, 0, len(messages)),
+			}
+			for _, message := range messages {
+				attachments, err := src.ListAttachments(message.ID)
+				if err != nil {
+					return nil, fmt.Errorf("list attachments for message %s: %w", message.ID, err)
+				}
+				collectedThread.messages = append(collectedThread.messages, migrationMessage{
+					message:     message,
+					attachments: attachments,
+				})
+			}
+			collectedTopic.threads = append(collectedTopic.threads, collectedThread)
+		}
+		data.topics = append(data.topics, collectedTopic)
+	}
+
+	return data, nil
+}
+
+func writeMigrationData(dst Storage, data *migrationData) (*MigrateSummary, error) {
+	summary := &MigrateSummary{}
+
+	for _, collectedTopic := range data.topics {
+		if err := dst.CreateTopic(collectedTopic.topic); err != nil {
+			return nil, fmt.Errorf("create topic %q: %w", collectedTopic.topic.Name, err)
 		}
 		summary.Topics++
 
-		if err := migrateTopic(src, dst, topic, summary); err != nil {
-			return nil, err
+		for _, collectedThread := range collectedTopic.threads {
+			if err := dst.CreateThread(collectedThread.thread); err != nil {
+				return nil, fmt.Errorf("create thread %q in topic %q: %w", collectedThread.thread.Subject, collectedTopic.topic.Name, err)
+			}
+			summary.Threads++
+
+			for _, collectedMessage := range collectedThread.messages {
+				if err := dst.CreateMessage(collectedMessage.message); err != nil {
+					return nil, fmt.Errorf("create message %s in thread %q: %w", collectedMessage.message.ID, collectedThread.thread.Subject, err)
+				}
+				summary.Messages++
+
+				for _, attachment := range collectedMessage.attachments {
+					if err := dst.CreateAttachment(attachment); err != nil {
+						return nil, fmt.Errorf("create attachment %q for message %s: %w", attachment.Filename, collectedMessage.message.ID, err)
+					}
+					summary.Attachments++
+				}
+			}
 		}
 	}
 
 	return summary, nil
-}
-
-// migrateTopic copies all threads (and their messages/attachments) for a single topic.
-func migrateTopic(src, dst Storage, topic *models.Topic, summary *MigrateSummary) error {
-	threads, err := src.ListThreads(topic.ID)
-	if err != nil {
-		return fmt.Errorf("list threads for topic %q: %w", topic.Name, err)
-	}
-
-	for _, thread := range threads {
-		if err := dst.CreateThread(thread); err != nil {
-			return fmt.Errorf("create thread %q in topic %q: %w", thread.Subject, topic.Name, err)
-		}
-		summary.Threads++
-
-		if err := migrateThread(src, dst, thread, summary); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// migrateThread copies all messages (and their attachments) for a single thread.
-func migrateThread(src, dst Storage, thread *models.Thread, summary *MigrateSummary) error {
-	messages, err := src.ListMessages(thread.ID)
-	if err != nil {
-		return fmt.Errorf("list messages for thread %q: %w", thread.Subject, err)
-	}
-
-	for _, msg := range messages {
-		if err := dst.CreateMessage(msg); err != nil {
-			return fmt.Errorf("create message %s in thread %q: %w", msg.ID, thread.Subject, err)
-		}
-		summary.Messages++
-
-		if err := migrateAttachments(src, dst, msg.ID, summary); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// migrateAttachments copies all attachments for a single message.
-func migrateAttachments(src, dst Storage, msgID uuid.UUID, summary *MigrateSummary) error {
-	attachments, err := src.ListAttachments(msgID)
-	if err != nil {
-		return fmt.Errorf("list attachments for message %s: %w", msgID, err)
-	}
-
-	for _, att := range attachments {
-		if err := dst.CreateAttachment(att); err != nil {
-			return fmt.Errorf("create attachment %q for message %s: %w", att.Filename, msgID, err)
-		}
-		summary.Attachments++
-	}
-	return nil
 }
 
 // IsDirNonEmpty checks whether a directory exists and contains any files or subdirectories.

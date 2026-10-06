@@ -5,8 +5,10 @@ package mcp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -307,6 +309,132 @@ func TestHandleCreateThread(t *testing.T) {
 	}
 }
 
+func TestHandleCreateThreadRemovesThreadWhenInitialMessageFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := storage.NewSqliteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	defer store.Close()
+
+	topic := models.NewTopic("TestTopic", "Test", "test@mcp")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	mustExecSQLite(t, dbPath, `
+		CREATE TRIGGER reject_initial_message
+		BEFORE INSERT ON messages
+		BEGIN
+			SELECT RAISE(FAIL, 'forced message insert failure');
+		END;
+	`)
+
+	server, err := NewServer(store)
+	if err != nil {
+		t.Fatalf("create MCP server: %v", err)
+	}
+	req := makeToolRequest(map[string]interface{}{
+		"topic":   topic.Name,
+		"subject": "Thread With Failed Message",
+		"message": "This message must fail",
+	})
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		result, err := server.handleCreateThread(context.Background(), req)
+		if err != nil {
+			t.Fatalf("attempt %d returned handler error: %v", attempt, err)
+		}
+		if !result.IsError {
+			t.Fatalf("attempt %d unexpectedly succeeded", attempt)
+		}
+		content := result.Content[0].(*mcp.TextContent).Text
+		if !strings.Contains(content, "forced message insert failure") {
+			t.Errorf("attempt %d error = %q, want original insert failure", attempt, content)
+		}
+
+		threads, err := store.ListThreads(topic.ID)
+		if err != nil {
+			t.Fatalf("attempt %d list threads: %v", attempt, err)
+		}
+		if len(threads) != 0 {
+			t.Fatalf("attempt %d left %d threads, want 0", attempt, len(threads))
+		}
+	}
+
+	mustExecSQLite(t, dbPath, `DROP TRIGGER reject_initial_message`)
+	result, err := server.handleCreateThread(context.Background(), req)
+	if err != nil {
+		t.Fatalf("successful retry returned handler error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("successful retry returned tool error: %v", result.Content)
+	}
+	threads, err := store.ListThreads(topic.ID)
+	if err != nil {
+		t.Fatalf("list threads after successful retry: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("thread count after successful retry = %d, want 1", len(threads))
+	}
+	messages, err := store.ListMessages(threads[0].ID)
+	if err != nil {
+		t.Fatalf("list messages after successful retry: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "This message must fail" {
+		t.Errorf("messages after successful retry = %#v, want one initial message", messages)
+	}
+}
+
+func TestHandleCreateThreadReportsMessageAndCleanupFailures(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := storage.NewSqliteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	defer store.Close()
+
+	topic := models.NewTopic("TestTopic", "Test", "test@mcp")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	mustExecSQLite(t, dbPath, `
+		CREATE TRIGGER reject_initial_message
+		BEFORE INSERT ON messages
+		BEGIN
+			SELECT RAISE(FAIL, 'forced message insert failure');
+		END;
+		CREATE TRIGGER reject_thread_cleanup
+		BEFORE DELETE ON threads
+		BEGIN
+			SELECT RAISE(FAIL, 'forced thread cleanup failure');
+		END;
+	`)
+
+	server, err := NewServer(store)
+	if err != nil {
+		t.Fatalf("create MCP server: %v", err)
+	}
+	result, err := server.handleCreateThread(context.Background(), makeToolRequest(map[string]interface{}{
+		"topic":   topic.Name,
+		"subject": "Thread With Failed Cleanup",
+		"message": "This message must fail",
+	}))
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("create thread unexpectedly succeeded")
+	}
+	content := result.Content[0].(*mcp.TextContent).Text
+	for _, want := range []string{"forced message insert failure", "forced thread cleanup failure"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("combined error = %q, want %q", content, want)
+		}
+	}
+}
+
 func TestHandleStickyThread(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
@@ -568,6 +696,59 @@ func TestHandleRecentResource(t *testing.T) {
 	}
 	if len(result.Contents) == 0 {
 		t.Error("expected contents in result")
+	}
+}
+
+func TestHandleRecentResourceReturnsTopicListError(t *testing.T) {
+	store := newTestStore(t)
+	server, err := NewServer(store)
+	if err != nil {
+		t.Fatalf("create MCP server: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close test store: %v", err)
+	}
+
+	result, err := server.handleRecentResource(context.Background(), &mcp.ReadResourceRequest{})
+	if err == nil {
+		t.Fatal("handleRecentResource unexpectedly succeeded with a closed store")
+	}
+	if result != nil {
+		t.Errorf("result = %#v, want nil when topic listing fails", result)
+	}
+	if !strings.Contains(err.Error(), "list recent topics") {
+		t.Errorf("error = %q, want topic-list context", err)
+	}
+}
+
+func TestHandleRecentResourceReturnsThreadListError(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := storage.NewSqliteStore(dbPath)
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	defer store.Close()
+
+	topic := models.NewTopic("TestTopic", "Test", "test@mcp")
+	if err := store.CreateTopic(topic); err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	mustExecSQLite(t, dbPath, `DROP TABLE threads`)
+
+	server, err := NewServer(store)
+	if err != nil {
+		t.Fatalf("create MCP server: %v", err)
+	}
+	result, err := server.handleRecentResource(context.Background(), &mcp.ReadResourceRequest{})
+	if err == nil {
+		t.Fatal("handleRecentResource unexpectedly succeeded with a missing threads table")
+	}
+	if result != nil {
+		t.Errorf("result = %#v, want nil when thread listing fails", result)
+	}
+	if !strings.Contains(err.Error(), `list recent threads for topic "TestTopic"`) {
+		t.Errorf("error = %q, want thread-list context", err)
 	}
 }
 
@@ -1042,4 +1223,16 @@ func newTestStore(t *testing.T) *storage.SqliteStore {
 		t.Fatalf("failed to create test store: %v", err)
 	}
 	return store
+}
+
+func mustExecSQLite(t *testing.T, dbPath, statement string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open SQLite database: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(statement); err != nil {
+		t.Fatalf("execute SQLite statement: %v", err)
+	}
 }

@@ -64,32 +64,39 @@ func (s *MarkdownStore) ResolveThread(idPrefix string) (*models.Thread, error) {
 
 	var matches []*models.Thread
 	for _, e := range entries {
-		topicDir := s.topicDirPath(e.Name)
+		topicDir, err := s.safeTopicDirPath(e.Name)
+		if err != nil {
+			return nil, err
+		}
 		dirEntries, err := os.ReadDir(topicDir)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read registered topic directory %s: %w", topicDir, err)
 		}
 
 		for _, de := range dirEntries {
 			if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
 				continue
 			}
-			fp := filepath.Join(topicDir, de.Name())
+			fp, err := containedPath(s.dataDir, filepath.Join(topicDir, de.Name()))
+			if err != nil {
+				return nil, err
+			}
 			fm, err := readThreadFrontmatter(fp)
 			if err != nil {
+				return nil, fmt.Errorf("read thread frontmatter %s: %w", fp, err)
+			}
+			threadID, err := uuid.Parse(fm.ID)
+			if err != nil {
+				return nil, fmt.Errorf("parse thread ID in %s: %w", fp, err)
+			}
+			if !strings.HasPrefix(fm.ID, idPrefix) {
 				continue
 			}
-			if strings.HasPrefix(fm.ID, idPrefix) {
-				threadID, err := uuid.Parse(fm.ID)
-				if err != nil {
-					continue
-				}
-				thread, err := s.readThreadFromFile(fp, threadID)
-				if err != nil {
-					continue
-				}
-				matches = append(matches, thread)
+			thread, err := s.readThreadFromFile(fp, threadID)
+			if err != nil {
+				return nil, fmt.Errorf("read thread %s: %w", fp, err)
 			}
+			matches = append(matches, thread)
 		}
 	}
 
@@ -132,20 +139,41 @@ func (s *MarkdownStore) findMessagesByPrefix(idPrefix string) ([]*models.Message
 	if err != nil {
 		return nil, err
 	}
+	topics := make([]*models.Topic, 0, len(entries))
+	for i := range entries {
+		topic, err := entries[i].toModel()
+		if err != nil {
+			return nil, fmt.Errorf("parse registered topic %q: %w", entries[i].Name, err)
+		}
+		if _, err := topicEntryIndexByID(entries, topic.ID); err != nil {
+			return nil, err
+		}
+		topics = append(topics, topic)
+	}
 
 	var matches []*models.Message
-	for _, e := range entries {
-		topicDir := s.topicDirPath(e.Name)
+	for _, topic := range topics {
+		topicDir, err := s.safeTopicDirPath(topic.Name)
+		if err != nil {
+			return nil, err
+		}
 		dirEntries, err := os.ReadDir(topicDir)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read registered topic directory %s: %w", topicDir, err)
 		}
 
 		for _, de := range dirEntries {
 			if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
 				continue
 			}
-			found := s.findMessagesInFile(filepath.Join(topicDir, de.Name()), idPrefix)
+			fp, err := containedPath(s.dataDir, filepath.Join(topicDir, de.Name()))
+			if err != nil {
+				return nil, err
+			}
+			found, err := s.findMessagesInFile(fp, idPrefix)
+			if err != nil {
+				return nil, fmt.Errorf("read messages from %s: %w", fp, err)
+			}
 			matches = append(matches, found...)
 		}
 	}
@@ -153,22 +181,25 @@ func (s *MarkdownStore) findMessagesByPrefix(idPrefix string) ([]*models.Message
 }
 
 // findMessagesInFile searches a single thread file for messages matching an ID prefix.
-func (s *MarkdownStore) findMessagesInFile(fp string, idPrefix string) []*models.Message {
+func (s *MarkdownStore) findMessagesInFile(fp string, idPrefix string) ([]*models.Message, error) {
 	data, err := os.ReadFile(fp)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read thread file: %w", err)
 	}
 
 	fm, err := parseThreadFrontmatter(string(data))
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("parse thread frontmatter: %w", err)
 	}
 	threadID, err := uuid.Parse(fm.ID)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("parse thread ID: %w", err)
 	}
 
-	messages := parseThreadMessages(string(data))
+	messages, err := parseThreadMessages(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse thread messages: %w", err)
+	}
 
 	var matches []*models.Message
 	for _, msg := range messages {
@@ -183,5 +214,5 @@ func (s *MarkdownStore) findMessagesInFile(fp string, idPrefix string) []*models
 			})
 		}
 	}
-	return matches
+	return matches, nil
 }

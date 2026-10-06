@@ -20,6 +20,14 @@ import (
 // CreateThread stores a new thread as a markdown file.
 func (s *MarkdownStore) CreateThread(t *models.Thread) error {
 	return mdstore.WithLock(s.dataDir, func() error {
+		locations, err := s.threadLocations(t.ID)
+		if err != nil {
+			return err
+		}
+		if len(locations) > 0 {
+			return fmt.Errorf("insert thread: duplicate thread ID %s", t.ID)
+		}
+
 		// Look up topic name
 		topicName, err := s.topicNameByID(t.TopicID)
 		if err != nil {
@@ -27,14 +35,20 @@ func (s *MarkdownStore) CreateThread(t *models.Thread) error {
 		}
 
 		// Ensure topic directory exists
-		topicDir := s.topicDirPath(topicName)
+		topicDir, err := s.safeTopicDirPath(topicName)
+		if err != nil {
+			return err
+		}
 		if err := mdstore.EnsureDir(topicDir); err != nil {
 			return fmt.Errorf("create topic directory: %w", err)
 		}
 
 		// Generate filename
 		filename := s.threadFileName(topicName, t.Subject, t.ID)
-		fp := filepath.Join(topicDir, filename)
+		fp, err := safeNamedPath(s.dataDir, topicDir, filename, "thread filename")
+		if err != nil {
+			return err
+		}
 
 		// Render the thread file (no messages yet)
 		content, err := renderThread(t, topicName, nil)
@@ -51,33 +65,85 @@ func (s *MarkdownStore) CreateThread(t *models.Thread) error {
 
 // GetThread retrieves a thread by ID.
 func (s *MarkdownStore) GetThread(id uuid.UUID) (*models.Thread, error) {
+	location, err := s.uniqueThreadLocation(id)
+	if err != nil {
+		return nil, err
+	}
+	return s.readThreadFromFile(location.path, id)
+}
+
+type threadLocation struct {
+	path      string
+	topicName string
+}
+
+func (s *MarkdownStore) threadLocations(id uuid.UUID) ([]threadLocation, error) {
 	entries, err := s.readTopics()
 	if err != nil {
 		return nil, err
 	}
-
-	for _, e := range entries {
-		fp, err := s.threadFilePath(e.Name, id)
+	var locations []threadLocation
+	for _, topic := range entries {
+		topicDir, err := s.safeTopicDirPath(topic.Name)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		thread, err := s.readThreadFromFile(fp, id)
+		dirEntries, err := os.ReadDir(topicDir)
 		if err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read topic directory: %w", err)
 		}
-		return thread, nil
+		for _, entry := range dirEntries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path, err := containedPath(s.dataDir, filepath.Join(topicDir, entry.Name()))
+			if err != nil {
+				return nil, err
+			}
+			fm, err := readThreadFrontmatter(path)
+			if err != nil {
+				return nil, fmt.Errorf("read thread frontmatter %s: %w", path, err)
+			}
+			storedID, err := uuid.Parse(fm.ID)
+			if err != nil {
+				return nil, fmt.Errorf("parse thread ID in %s: %w", path, err)
+			}
+			if storedID == id {
+				locations = append(locations, threadLocation{path: path, topicName: topic.Name})
+			}
+		}
 	}
-	return nil, fmt.Errorf("thread not found: %s", id)
+	return locations, nil
 }
 
-// ListThreads returns all threads for a topic, sorted by sticky then updated_at DESC.
+func (s *MarkdownStore) uniqueThreadLocation(id uuid.UUID) (*threadLocation, error) {
+	locations, err := s.threadLocations(id)
+	if err != nil {
+		return nil, err
+	}
+	if len(locations) > 1 {
+		return nil, fmt.Errorf("ambiguous thread ID %s: UUID collision across %d files", id, len(locations))
+	}
+	if len(locations) == 0 {
+		return nil, fmt.Errorf("thread not found: %s", id)
+	}
+	return &locations[0], nil
+}
+
+// ListThreads returns all threads for a topic, sorted by sticky, updated_at DESC, then UUID.
 func (s *MarkdownStore) ListThreads(topicID uuid.UUID) ([]*models.Thread, error) {
 	topicName, err := s.topicNameByID(topicID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve topic: %w", err)
 	}
 
-	topicDir := s.topicDirPath(topicName)
+	topicDir, err := s.safeTopicDirPath(topicName)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(topicDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -91,10 +157,13 @@ func (s *MarkdownStore) ListThreads(topicID uuid.UUID) ([]*models.Thread, error)
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		fp := filepath.Join(topicDir, entry.Name())
+		fp, err := containedPath(s.dataDir, filepath.Join(topicDir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
 		thread, err := s.readThreadFromFileWithUpdatedAt(fp)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read thread %s: %w", fp, err)
 		}
 		if thread.TopicID != topicID {
 			continue
@@ -102,10 +171,13 @@ func (s *MarkdownStore) ListThreads(topicID uuid.UUID) ([]*models.Thread, error)
 		threads = append(threads, thread)
 	}
 
-	// Sort: sticky first, then by updated_at DESC
+	// Sort: sticky first, then by updated_at DESC, then UUID.
 	sort.Slice(threads, func(i, j int) bool {
 		if threads[i].Sticky != threads[j].Sticky {
 			return threads[i].Sticky
+		}
+		if threads[i].UpdatedAt.Equal(threads[j].UpdatedAt) {
+			return threads[i].ID.String() < threads[j].ID.String()
 		}
 		return threads[j].UpdatedAt.Before(threads[i].UpdatedAt)
 	})
@@ -116,15 +188,18 @@ func (s *MarkdownStore) ListThreads(topicID uuid.UUID) ([]*models.Thread, error)
 // UpdateThread updates an existing thread.
 func (s *MarkdownStore) UpdateThread(t *models.Thread) error {
 	return mdstore.WithLock(s.dataDir, func() error {
+		location, err := s.uniqueThreadLocation(t.ID)
+		if err != nil {
+			return err
+		}
 		topicName, err := s.topicNameByID(t.TopicID)
 		if err != nil {
 			return fmt.Errorf("resolve topic: %w", err)
 		}
-
-		oldPath, err := s.threadFilePath(topicName, t.ID)
-		if err != nil {
-			return fmt.Errorf("find thread file: %w", err)
+		if location.topicName != topicName {
+			return fmt.Errorf("thread %s does not belong to topic %s", t.ID, t.TopicID)
 		}
+		oldPath := location.path
 
 		// Read existing messages
 		data, err := os.ReadFile(oldPath)
@@ -132,7 +207,10 @@ func (s *MarkdownStore) UpdateThread(t *models.Thread) error {
 			return fmt.Errorf("read thread file: %w", err)
 		}
 
-		messages := parseThreadMessages(string(data))
+		messages, err := parseThreadMessages(string(data))
+		if err != nil {
+			return fmt.Errorf("parse thread messages: %w", err)
+		}
 
 		// Set updated_at to now
 		t.UpdatedAt = time.Now().UTC()
@@ -145,7 +223,14 @@ func (s *MarkdownStore) UpdateThread(t *models.Thread) error {
 
 		// Determine new filename (in case subject changed)
 		newFilename := s.threadFileName(topicName, t.Subject, t.ID)
-		newPath := filepath.Join(s.topicDirPath(topicName), newFilename)
+		topicDir, err := s.safeTopicDirPath(topicName)
+		if err != nil {
+			return err
+		}
+		newPath, err := safeNamedPath(s.dataDir, topicDir, newFilename, "thread filename")
+		if err != nil {
+			return err
+		}
 
 		if err := mdstore.AtomicWrite(newPath, []byte(content)); err != nil {
 			return fmt.Errorf("write thread file: %w", err)
@@ -163,60 +248,52 @@ func (s *MarkdownStore) UpdateThread(t *models.Thread) error {
 // DeleteThread deletes a thread (removes its markdown file).
 func (s *MarkdownStore) DeleteThread(id uuid.UUID) error {
 	return mdstore.WithLock(s.dataDir, func() error {
-		entries, err := s.readTopics()
+		location, err := s.uniqueThreadLocation(id)
 		if err != nil {
 			return err
 		}
-
-		for _, e := range entries {
-			fp, err := s.threadFilePath(e.Name, id)
-			if err != nil {
-				continue
-			}
-
-			// Also clean up any attachments for messages in this thread
-			data, err := os.ReadFile(fp)
-			if err == nil {
-				messages := parseThreadMessages(string(data))
-				for _, msg := range messages {
-					prefix := msg.ID.String()[:8]
-					attDir := s.attachmentDirPath(e.Name, prefix)
-					os.RemoveAll(attDir)
-				}
-			}
-
-			if err := os.Remove(fp); err != nil {
-				return fmt.Errorf("delete thread file: %w", err)
-			}
-			return nil
-		}
-		return fmt.Errorf("thread not found: %s", id)
+		return s.deleteThreadFile(location.path, location.topicName)
 	})
+}
+
+func (s *MarkdownStore) deleteThreadFile(path string, topicName string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read thread before delete: %w", err)
+	}
+	messages, err := parseThreadMessages(string(data))
+	if err != nil {
+		return fmt.Errorf("parse thread before delete: %w", err)
+	}
+	var attachmentDirs []string
+	for _, msg := range messages {
+		dirs, err := s.attachmentDirsForMessage(topicName, msg.ID)
+		if err != nil {
+			return err
+		}
+		attachmentDirs = append(attachmentDirs, dirs...)
+	}
+	if err := preflightAttachmentRemoval(attachmentDirs); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("delete thread file: %w", err)
+	}
+	for _, attachmentDir := range attachmentDirs {
+		if err := os.RemoveAll(attachmentDir); err != nil {
+			return fmt.Errorf("remove thread attachments: %w", err)
+		}
+	}
+	return nil
 }
 
 // SetThreadSticky sets the sticky status of a thread.
 // Performs the read-modify-write under a single lock hold to avoid TOCTOU races.
 func (s *MarkdownStore) SetThreadSticky(id uuid.UUID, sticky bool) error {
 	return mdstore.WithLock(s.dataDir, func() error {
-		// Find the thread file while holding the lock
-		entries, err := s.readTopics()
+		threadFP, topicName, err := s.findThreadFile(id)
 		if err != nil {
 			return err
-		}
-
-		var threadFP string
-		var topicName string
-		for _, e := range entries {
-			fp, fpErr := s.threadFilePath(e.Name, id)
-			if fpErr != nil {
-				continue
-			}
-			threadFP = fp
-			topicName = e.Name
-			break
-		}
-		if threadFP == "" {
-			return fmt.Errorf("thread not found: %s", id)
 		}
 
 		// Read thread data under lock
@@ -247,14 +324,14 @@ func (s *MarkdownStore) SetThreadSticky(id uuid.UUID, sticky bool) error {
 			return fmt.Errorf("parse thread created_at: %w", err)
 		}
 
-		messages := parseThreadMessages(string(data))
+		messages, err := parseThreadMessages(string(data))
+		if err != nil {
+			return fmt.Errorf("parse thread messages: %w", err)
+		}
 
-		// Compute updated_at from messages
-		updatedAt := createdAt
-		for _, msg := range messages {
-			if msg.CreatedAt.After(updatedAt) {
-				updatedAt = msg.CreatedAt
-			}
+		updatedAt, err := threadActivity(fm, messages)
+		if err != nil {
+			return fmt.Errorf("read thread activity: %w", err)
 		}
 
 		// Modify sticky and write back, all under the same lock
@@ -287,13 +364,17 @@ func (s *MarkdownStore) topicNameByID(id uuid.UUID) (string, error) {
 		return "", err
 	}
 
-	idStr := id.String()
-	for _, e := range entries {
-		if e.ID == idStr {
-			return e.Name, nil
-		}
+	index, err := topicEntryIndexByID(entries, id)
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("topic not found: %s", id)
+	if index < 0 {
+		return "", fmt.Errorf("topic not found: %s", id)
+	}
+	if _, err := s.safeTopicDirPath(entries[index].Name); err != nil {
+		return "", err
+	}
+	return entries[index].Name, nil
 }
 
 // readThreadFromFile reads a thread from a markdown file and computes updated_at.
@@ -322,16 +403,17 @@ func (s *MarkdownStore) readThreadFromFile(fp string, expectedID uuid.UUID) (*mo
 		return nil, fmt.Errorf("parse thread created_at: %w", err)
 	}
 
-	// Compute updated_at from messages
-	updatedAt := createdAt
 	data, err := os.ReadFile(fp)
-	if err == nil {
-		messages := parseThreadMessages(string(data))
-		for _, msg := range messages {
-			if msg.CreatedAt.After(updatedAt) {
-				updatedAt = msg.CreatedAt
-			}
-		}
+	if err != nil {
+		return nil, fmt.Errorf("read thread file: %w", err)
+	}
+	messages, err := parseThreadMessages(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse thread messages in %s: %w", fp, err)
+	}
+	updatedAt, err := threadActivity(fm, messages)
+	if err != nil {
+		return nil, fmt.Errorf("read thread activity in %s: %w", fp, err)
 	}
 
 	return &models.Thread{

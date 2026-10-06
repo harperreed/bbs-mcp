@@ -23,7 +23,7 @@ func (s *Server) registerResources() {
 	s.mcp.AddResource(&mcp.Resource{
 		URI:         "bbs://recent",
 		Name:        "Recent Activity",
-		Description: "Recent threads and messages across all topics",
+		Description: "Up to three threads per active topic, ordered sticky first then by most recent update; message content is not included",
 		MIMEType:    "text/markdown",
 	}, s.handleRecentResource)
 
@@ -60,18 +60,24 @@ func (s *Server) handleTopicsResource(ctx context.Context, req *mcp.ReadResource
 }
 
 func (s *Server) handleRecentResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-	topics, _ := s.store.ListTopics(false)
+	topics, err := s.store.ListTopics(false)
+	if err != nil {
+		return nil, fmt.Errorf("list recent topics: %w", err)
+	}
 
 	var sb strings.Builder
 	sb.WriteString("# Recent Activity\n\n")
 
 	for _, topic := range topics {
-		threads, _ := s.store.ListThreads(topic.ID)
+		threads, err := s.store.ListThreads(topic.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list recent threads for topic %q: %w", topic.Name, err)
+		}
 		if len(threads) == 0 {
 			continue
 		}
 
-		sb.WriteString(fmt.Sprintf("## %s\n\n", topic.Name))
+		fmt.Fprintf(&sb, "## %s\n\n", topic.Name)
 		for i, thread := range threads {
 			if i >= 3 {
 				break
@@ -80,7 +86,7 @@ func (s *Server) handleRecentResource(ctx context.Context, req *mcp.ReadResource
 			if thread.Sticky {
 				prefix = "📌 "
 			}
-			sb.WriteString(fmt.Sprintf("- %s**%s** by %s\n", prefix, thread.Subject, thread.CreatedBy))
+			fmt.Fprintf(&sb, "- %s**%s** by %s\n", prefix, thread.Subject, thread.CreatedBy)
 		}
 		sb.WriteString("\n")
 	}
@@ -141,12 +147,12 @@ func (s *Server) handleThreadMessagesResource(ctx context.Context, req *mcp.Read
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s\n\n", thread.Subject))
-	sb.WriteString(fmt.Sprintf("*Started by %s on %s*\n\n", thread.CreatedBy, thread.CreatedAt.Format("2006-01-02")))
+	fmt.Fprintf(&sb, "# %s\n\n", thread.Subject)
+	fmt.Fprintf(&sb, "*Started by %s on %s*\n\n", thread.CreatedBy, thread.CreatedAt.Format("2006-01-02"))
 	sb.WriteString("---\n\n")
 
 	for _, msg := range messages {
-		sb.WriteString(fmt.Sprintf("**%s** · %s\n\n", msg.CreatedBy, msg.CreatedAt.Format("Jan 02 15:04")))
+		fmt.Fprintf(&sb, "**%s** · %s\n\n", msg.CreatedBy, msg.CreatedAt.Format("Jan 02 15:04"))
 		sb.WriteString(msg.Content)
 		sb.WriteString("\n\n---\n\n")
 	}
