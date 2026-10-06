@@ -1,8 +1,11 @@
 root
 /bbs
 .scratch/
+.superpowers/
+dist/
 
 # Coverage files
 coverage.html
 coverage.out
 *_cover.out
+.kata.local.toml
