@@ -4,9 +4,9 @@
 
 The hooks lint the whole module (golangci-lint `--fix`) and run `go test -short -race ./...`. prek stashes unstaged edits to tracked files but leaves untracked files in place, so a new test file meant for a later commit runs against an earlier commit's code and fails the hook. When splitting work into several commits, move later commits' new files to `.scratch/held/` (gitignored, and Go skips dot-directories) and restore each before its own commit.
 
-## CI lints with golangci-lint v2.7.2, not your local version
+## CI pins golangci-lint; your local copy floats
 
-`.github/workflows/ci.yml` pins v2.7.2; the pre-commit hook uses whatever is installed. On 2026-10-06, v2.7.2 flagged five `prealloc` sites in `internal/storage/markdown*.go` that 2.13.2 passed, so a green local commit can still fail CI. Check with `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 run ./...`. Preallocating the public `List*` results would change Markdown's empty-list MCP JSON from `null` to `[]` while SQLite stays `null`.
+`.github/workflows/ci.yml` pins golangci-lint v2.13.2, but the pre-commit hook runs whatever binary is installed, and Homebrew upgrades it on its own. Versions disagree: the old v2.7.2 pin flagged five `prealloc` sites in `internal/storage/markdown*.go` that 2.13.2 passes, which kept CI red while local commits were green. When `golangci-lint version` stops matching the pin, either bump the pin or run the pinned version with `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@<pin> run ./...`. Don't "fix" those prealloc sites by preallocating the public `List*` results: that changes Markdown's empty-list MCP JSON from `null` to `[]` while SQLite stays `null`.
 
 ## The Homebrew cask strips quarantine, and the old formula still wins
 
