@@ -72,19 +72,28 @@ changelog:
     - title: 'Other'
       order: 999
 
-brews:
+homebrew_casks:
   - repository:
       owner: harperreed
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: https://github.com/harperreed/bbs
+    ids:
+      - bbs
+    binaries:
+      - bbs
+    directory: Casks
+    homepage: https://github.com/harperreed/bbs-mcp
     description: "A lightweight message board for humans and AI agents"
     license: MIT
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    install: |
-      bin.install "bbs"
-    test: |
-      system "#{bin}/bbs", "version"
+    # The binary is not Developer ID signed or notarized, so Gatekeeper would block the
+    # quarantined download. Stripping quarantine bypasses that check; drop this hook once
+    # releases are signed and notarized.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/bbs"]
+          end
