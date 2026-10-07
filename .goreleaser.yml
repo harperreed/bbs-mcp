@@ -72,28 +72,23 @@ changelog:
     - title: 'Other'
       order: 999
 
-homebrew_casks:
+# GoReleaser deprecates brews in favor of homebrew_casks, and goreleaser check reports it,
+# but releases still work. We keep the formula on purpose: the binary is not signed or
+# notarized, formula installs are not quarantined, and the v1.3.5 cask needed a Gatekeeper
+# bypass. Revisit when GoReleaser drops brews or releases are signed.
+brews:
   - repository:
       owner: harperreed
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    ids:
-      - bbs
-    binaries:
-      - bbs
-    directory: Casks
+    directory: Formula
     homepage: https://github.com/harperreed/bbs-mcp
     description: "A lightweight message board for humans and AI agents"
     license: MIT
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    # The binary is not Developer ID signed or notarized, so Gatekeeper would block the
-    # quarantined download. Stripping quarantine bypasses that check; drop this hook once
-    # releases are signed and notarized.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/bbs"]
-          end
+    install: |
+      bin.install "bbs"
+    test: |
+      system "#{bin}/bbs", "version"
